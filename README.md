@@ -9,7 +9,7 @@
 
 ---
 
-<b>DataLyze is an open-source, lightweight, offline-first data analysis tool designed for individual analysts.</b><br>Upload a CSV or Excel file, explore it through interactive charts and generate shareable dashboards - all locally, without complex setup or cloud dependency.
+<b>DataLyze is an open-source, lightweight, offline-first data analysis tool designed for individual analysts.</b><br><br>Upload a CSV or Excel file, explore it through interactive charts and generate shareable dashboards - all locally, without complex setup or cloud dependency.
 
 
 ## Quick Start
