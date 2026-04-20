@@ -4,11 +4,17 @@
 >
 > ## Demo Screenshots
 
-![Upload Screen](assets/upload_screen.png)
+![Login Screen](demo_pics/welcome_screen.png)
 
-![Charts View](assets/charts.png)
+![Profile_Dashboad](assets/profile_dashboad.png)
 
-![Dashboard](assets/dashboard.png)
+![Upload & Overview](assets/data_upload&overview.png)
+
+![Data_Transformation](assets/data_transformation.png)
+
+![Analysis_Options](assets/analysis_options.png)
+
+![Final_dashboard](assets/final_dashboard.png)
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.30%2B-red?logo=streamlit)
