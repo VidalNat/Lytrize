@@ -1,6 +1,6 @@
 # 📊 DataLyze — Intelligent Data Analysis Platform
 
-> Upload a dataset. Explore it visually. Share findings as a dashboard. No code required.
+> ⚡ Fast, offline analytics for real-world datasets — no cloud, no complexit
 
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.30%2B-red?logo=streamlit)
