@@ -306,7 +306,7 @@ MIT — free to use, modify, and distribute. See `LICENSE`.
 
 ## Questions?
 
-Open an [Issue](https://github.com/your-username/datalyze/issues) and we will get back to you.
+Open an [Issue](https://github.com/VidalNat/dataLyze-oensource-data_analysis-platform/issues) and we will get back to you.
 
 ---
 
