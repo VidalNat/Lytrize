@@ -32,6 +32,9 @@
 ```bash
 git clone https://github.com/VidalNat/datalyze.git
 cd datalyze
+python3 -m venv yourvenv  # Create your venv in the folder 'datalyze'
+source dataLyze/yourvenv/bin/activate  # Initiate your virtul enoviroment
+# For windows using Git Bash, command: source yourvenv\Scripts\activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
