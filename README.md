@@ -6,7 +6,8 @@
 >
 > Demo screenshots are maintained in the project Wiki.
 
-<!-- 
+![Welcome_Screen](demo_pics/welcome_screen.png)
+ <!--
 ![Profile_Dashboad](demo_pics/profile_dashboad.png)
 
 ![Upload & Overview](demo_pics/data_upload&overview.png)
