@@ -30,8 +30,6 @@
 
 Please check - [Getting Started](https://github.com/VidalNat/DataLyzze/wiki/Getting-started)
 
-Open `http://localhost:8501` in your browser. That's it.
-
 ## Documentation
 
 Everything else lives in the **[project Wiki](../../wiki)**:
