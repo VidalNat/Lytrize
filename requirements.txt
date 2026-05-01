@@ -4,3 +4,5 @@ plotly
 openpyxl
 kaleido
 fpdf2
+# PostgreSQL support (optional — only needed when DATABASE_URL is set):
+# psycopg2-binary

@@ -20,7 +20,7 @@ st.set_page_config(
 
 from modules.database import init_db, validate_token, get_draft
 from modules.ui.css import inject_css
-from modules.pages.auth      import page_auth
+from modules.pages.auth      import page_auth, page_profile
 from modules.pages.home      import page_home
 from modules.pages.upload    import page_upload
 from modules.pages.analysis  import page_analysis
@@ -153,6 +153,7 @@ def main():
     elif p == "upload":    page_upload()
     elif p == "analysis":  page_analysis()
     elif p == "dashboard": page_dashboard()
+    elif p == "profile":   page_profile()
 
 
 if __name__ == "__main__":

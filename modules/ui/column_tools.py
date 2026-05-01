@@ -39,57 +39,71 @@ def show_dtype_transformer(df):
         key=f"dtype_target_{col_to_convert}")
 
     if st.button("🔄 Apply Transformation", key=f"apply_dtype_{col_to_convert}"):
-        try:
-            if new_dtype == "datetime64[ns]":
-                converted = pd.to_datetime(df[col_to_convert], errors='coerce')
-            elif new_dtype == "date":
-                converted = pd.to_datetime(df[col_to_convert], errors='coerce').dt.date
-            elif new_dtype == "time":
-                # Handle pure time strings like "07:06:11" which pd.to_datetime
-                # can't parse alone — prepend a dummy date.
-                def _to_time(val):
-                    if pd.isna(val) or val is None:
-                        return None
-                    if isinstance(val, datetime.time):
-                        return val
-                    s = str(val).strip()
-                    try:
-                        return pd.to_datetime("1970-01-01 " + s).time()
-                    except Exception:
-                        try:
-                            return pd.to_datetime(s).time()
-                        except Exception:
-                            return None
-                converted = df[col_to_convert].apply(_to_time)
-            elif new_dtype == "timedelta64[ns]":
-                # pd.to_timedelta handles "HH:MM:SS" strings natively.
-                # If values are Python datetime.time objects, convert via str first.
-                def _to_td(val):
-                    if pd.isna(val) or val is None:
-                        return pd.NaT
-                    if isinstance(val, datetime.time):
-                        return pd.Timedelta(hours=val.hour, minutes=val.minute,
-                                            seconds=val.second,
-                                            microseconds=val.microsecond)
-                    try:
-                        return pd.to_timedelta(str(val))
-                    except Exception:
-                        return pd.NaT
-                converted = df[col_to_convert].apply(_to_td)
-            elif new_dtype in ["string", "object"]:
-                converted = df[col_to_convert].astype(str)
-            elif new_dtype == "category":
-                converted = df[col_to_convert].astype('category')
-            elif new_dtype in ["int64", "float64"]:
-                converted = pd.to_numeric(df[col_to_convert], errors='coerce').astype(new_dtype)
-            else:
-                converted = df[col_to_convert].astype(new_dtype)
-            df[col_to_convert] = converted
-            st.session_state.df = df
-            st.success(f"✅ Converted `{col_to_convert}` to `{new_dtype}`")
-            st.rerun()
-        except Exception as e:
-            st.error(f"❌ Conversion failed: {e}")
+        with st.spinner(f"Converting `{col_to_convert}` to {new_dtype}…"):
+            try:
+                if new_dtype == "datetime64[ns]":
+                    converted = pd.to_datetime(df[col_to_convert], errors='coerce')
+
+                elif new_dtype == "date":
+                    converted = pd.to_datetime(df[col_to_convert], errors='coerce').dt.date
+
+                elif new_dtype == "time":
+                    # Fully vectorised — prepend dummy date so pd.to_datetime can
+                    # parse pure time strings like "07:06:11", then store as "HH:MM:SS"
+                    # strings (avoids Streamlit serialisation issues with time objects).
+                    src = df[col_to_convert].astype(str).str.strip()
+                    parsed = pd.to_datetime("1970-01-01 " + src, errors='coerce')
+                    # Where dummy-date parse failed, try direct ISO parse
+                    mask_failed = parsed.isna()
+                    if mask_failed.any():
+                        parsed[mask_failed] = pd.to_datetime(
+                            src[mask_failed], errors='coerce')
+                    converted = parsed.dt.strftime('%H:%M:%S').where(
+                        parsed.notna(), other=None)
+
+                elif new_dtype == "timedelta64[ns]":
+                    src = df[col_to_convert]
+                    # If column already holds datetime.time objects, stringify them
+                    if len(src) > 0 and isinstance(src.iloc[0], datetime.time):
+                        src = src.apply(
+                            lambda v: f"{v.hour}:{v.minute:02d}:{v.second:02d}"
+                            if isinstance(v, datetime.time) else str(v))
+                    converted = pd.to_timedelta(src.astype(str), errors='coerce')
+
+                elif new_dtype in ["string", "object"]:
+                    converted = df[col_to_convert].astype(str)
+
+                elif new_dtype == "category":
+                    converted = df[col_to_convert].astype('category')
+
+                elif new_dtype == "bool":
+                    src = df[col_to_convert].astype(str).str.strip().str.lower()
+                    converted = src.map({"true": True, "1": True, "yes": True,
+                                         "false": False, "0": False, "no": False})
+                    if converted.isna().all():
+                        raise ValueError(
+                            "No recognisable boolean values (expected true/false/1/0/yes/no).")
+
+                elif new_dtype in ["int64", "float64"]:
+                    converted = pd.to_numeric(
+                        df[col_to_convert], errors='coerce').astype(new_dtype)
+
+                else:
+                    converted = df[col_to_convert].astype(new_dtype)
+
+                # Report how many values could not convert
+                n_null_before = int(df[col_to_convert].isna().sum())
+                df[col_to_convert] = converted
+                st.session_state.df = df
+                n_null_after = int(df[col_to_convert].isna().sum())
+                new_nulls = max(0, n_null_after - n_null_before)
+                msg = f"✅ Converted `{col_to_convert}` to `{new_dtype}`"
+                if new_nulls:
+                    msg += f" ({new_nulls} value(s) couldn't convert → became null)"
+                st.success(msg)
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Conversion failed: {e}")
 
     return df
 

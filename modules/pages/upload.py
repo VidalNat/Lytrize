@@ -135,7 +135,7 @@ def _show_analysis_pipeline(df: pd.DataFrame, file_name: str):
 def _clear_excel_state(new_file_name: str = ""):
     keys_to_delete = [
         k for k in list(st.session_state.keys())
-        if k.startswith("_xl_sheets_") and not k.endswith(new_file_name)
+        if k.startswith("_xl_sheets_") and (not new_file_name or not k.endswith(new_file_name))
     ]
     for k in keys_to_delete:
         del st.session_state[k]

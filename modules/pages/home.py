@@ -11,6 +11,7 @@ from modules.database import (
     rename_session_db, delete_session_db,
 )
 from modules.ui.css import inject_footer, render_logo
+from modules.analysis import ANALYSIS_OPTIONS
 
 
 def page_home():
@@ -24,10 +25,14 @@ def page_home():
             st.rerun()
 
     # Logo + logout row
-    lc1, lc2 = st.columns([14, 1])
+    lc1, lc2, lc3 = st.columns([13, 1, 1])
     with lc1:
         render_logo()
     with lc2:
+        if st.button("👤 Profile"):
+            st.session_state.page = "profile"
+            st.rerun()
+    with lc3:
         if st.button("Logout"):
             tok = st.query_params.get("t", "")
             if tok: revoke_token(tok)
@@ -71,7 +76,7 @@ def page_home():
     with m3:
         st.markdown(
             '<div class="kpi-card"><div class="kpi-icon">🔬</div>'
-            '<div class="kpi-val">9</div>'
+            '<div class="kpi-val">' + str(len(ANALYSIS_OPTIONS)) + '</div>'
             '<div class="kpi-lbl">Available analysis</div></div>',
             unsafe_allow_html=True)
 

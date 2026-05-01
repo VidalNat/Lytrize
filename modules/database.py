@@ -5,7 +5,7 @@ draft session persistence, and extended session metadata.
 
 DATABASE BACKEND
 ────────────────
-By default uses SQLite (file: datalyze.db or $DATALYZE_DB_PATH).
+By default uses SQLite (file: lytrize.db or $lytrize_DB_PATH).
 Set DATABASE_URL=postgresql://user:pass@host/dbname to switch to PostgreSQL
 when deploying online (requires psycopg2: pip install psycopg2-binary).
 
@@ -19,8 +19,9 @@ import os
 import hashlib
 import hmac
 import datetime
+from typing import Optional
 
-DB_PATH    = os.environ.get("DATALYZE_DB_PATH", "datalyze.db")
+DB_PATH    = os.environ.get("lytrize_DB_PATH", "lytrize.db")
 DB_URL     = os.environ.get("DATABASE_URL", "")
 _PG        = DB_URL.startswith(("postgresql://", "postgres://"))
 
@@ -35,7 +36,7 @@ def _connect():
         return conn
     else:
         import sqlite3
-        return sqlite3.connect(DB_PATH)
+        return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
 def _ph(sql: str) -> str:
@@ -122,6 +123,9 @@ def init_db():
             cols_count INTEGER,
             analysis_types TEXT,
             charts_json TEXT,
+            dashboard_title TEXT DEFAULT '',
+            kpis_json TEXT DEFAULT '[]',
+            layout_mode TEXT DEFAULT 'portrait',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (user_id) REFERENCES users(id))""")
         c.execute("""CREATE TABLE IF NOT EXISTS user_activity (
@@ -166,7 +170,7 @@ def init_db():
 
 # ─── Password hashing (PBKDF2-HMAC-SHA256 with salt) ─────────────────────────
 
-def _hash(pw: str, salt: str | None = None) -> str:
+def _hash(pw: str, salt: Optional[str] = None) -> str:
     """Return 'salt$hash' string. Falls back to bare sha256 for legacy rows."""
     if salt is None:
         salt = uuid.uuid4().hex
@@ -241,7 +245,7 @@ def login_user(username, password):
 
 def create_token(user_id, username):
     token   = uuid.uuid4().hex
-    expires = (datetime.datetime.utcnow() + datetime.timedelta(days=7)).isoformat()
+    expires = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=7)).isoformat()
     conn = _connect()
     conn.execute(
         _ph("INSERT INTO login_tokens (token, user_id, username, expires_at) VALUES (?,?,?,?) "
@@ -263,7 +267,20 @@ def validate_token(token):
     conn.close()
     if not row:
         return None
-    if datetime.datetime.utcnow().isoformat() > str(row[2]):
+    # Normalise expires_at to a datetime regardless of whether the DB returned
+    # a string (SQLite) or a datetime object (PostgreSQL).
+    expires_raw = row[2]
+    if isinstance(expires_raw, datetime.datetime):
+        expires_dt = expires_raw if expires_raw.tzinfo else expires_raw.replace(tzinfo=datetime.timezone.utc)
+    else:
+        expires_str = str(expires_raw).replace("Z", "+00:00")
+        try:
+            expires_dt = datetime.datetime.fromisoformat(expires_str)
+        except ValueError:
+            return None  # Unparseable expiry — treat as expired
+        if expires_dt.tzinfo is None:
+            expires_dt = expires_dt.replace(tzinfo=datetime.timezone.utc)
+    if datetime.datetime.now(datetime.timezone.utc) >= expires_dt:
         return None
     return row[0], row[1]
 
@@ -382,7 +399,23 @@ def delete_session_db(session_id, user_id):
     conn.execute(_ph("DELETE FROM sessions WHERE id=? AND user_id=?"), (session_id, user_id))
     conn.commit()
     conn.close()
-    log_activity(user_id, "session_deleted", f"session_id={session_id}")
+
+
+def delete_user_db(user_id: int) -> bool:
+    """Permanently delete a user account and all associated data."""
+    try:
+        conn = _connect()
+        # Delete in dependency order
+        conn.execute(_ph("DELETE FROM login_tokens   WHERE user_id=?"), (user_id,))
+        conn.execute(_ph("DELETE FROM draft_sessions WHERE user_id=?"), (user_id,))
+        conn.execute(_ph("DELETE FROM user_activity  WHERE user_id=?"), (user_id,))
+        conn.execute(_ph("DELETE FROM sessions        WHERE user_id=?"), (user_id,))
+        conn.execute(_ph("DELETE FROM users           WHERE id=?"),      (user_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception:
+        return False
 
 
 def update_session_db(session_id, session_name, charts_json, analysis_types,

@@ -8,7 +8,7 @@ Clean, working dashboard with:
   - Insights & notes displayed correctly
 """
 
-import json, copy
+import json, copy, datetime
 import pandas as pd
 import streamlit as st
 from html import escape
@@ -20,7 +20,7 @@ from modules.database import (
     get_session_charts, get_session_meta,
     clear_draft, save_draft,
 )
-from modules.charts import charts_to_json, clean_insight_text
+from modules.charts import charts_to_json, clean_insight_text, _fmt_num
 from modules.export import generate_html_report, generate_pdf_report
 from modules.ui.css import inject_footer, render_logo
 
@@ -115,20 +115,20 @@ def _calc_kpi(df, kpi_type, col=None, group_col=None, metric_col=None,
     try:
         if kpi_type == "Total (Sum)" and col in num_c:
             v = df[col].sum()
-            val = f"{v:,.0f}" if abs(v) >= 1000 else f"{v:.2f}"
+            val = _fmt_num(v)
             lbl = label or f"Total {col}"
         elif kpi_type == "Average (Mean)" and col in num_c:
-            val = f"{df[col].mean():,.2f}"; lbl = label or f"Avg {col}"
+            val = _fmt_num(df[col].mean()); lbl = label or f"Avg {col}"
         elif kpi_type == "Median" and col in num_c:
-            val = f"{df[col].median():,.2f}"; lbl = label or f"Median {col}"
+            val = _fmt_num(df[col].median()); lbl = label or f"Median {col}"
         elif kpi_type == "Count (Rows)":
-            val = f"{len(df):,}"; lbl = label or "Total Records"
+            val = _fmt_num(len(df)); lbl = label or "Total Records"
         elif kpi_type == "Minimum Value" and col in num_c:
-            val = f"{df[col].min():,.2f}"; lbl = label or f"Min {col}"
+            val = _fmt_num(df[col].min()); lbl = label or f"Min {col}"
         elif kpi_type == "Maximum Value" and col in num_c:
-            val = f"{df[col].max():,.2f}"; lbl = label or f"Max {col}"
+            val = _fmt_num(df[col].max()); lbl = label or f"Max {col}"
         elif kpi_type == "Unique Values Count" and col:
-            val = f"{df[col].nunique():,}"; lbl = label or f"Unique {col}"
+            val = _fmt_num(df[col].nunique()); lbl = label or f"Unique {col}"
         elif kpi_type == "Date Range" and col:
             dates = pd.to_datetime(df[col], errors="coerce").dropna()
             if len(dates):
@@ -141,10 +141,10 @@ def _calc_kpi(df, kpi_type, col=None, group_col=None, metric_col=None,
             lbl = label or f"{filter_val} share"
         elif kpi_type == "Top Category → Value" and group_col and metric_col in num_c:
             grp = df.groupby(group_col)[metric_col].sum()
-            val = f"{grp.idxmax()}: {grp.max():,.0f}"; lbl = label or f"Top {group_col}"
+            val = f"{grp.idxmax()}: {_fmt_num(grp.max())}"; lbl = label or f"Top {group_col}"
         elif kpi_type == "Bottom Category → Value" and group_col and metric_col in num_c:
             grp = df.groupby(group_col)[metric_col].sum()
-            val = f"{grp.idxmin()}: {grp.min():,.0f}"; lbl = label or f"Bottom {group_col}"
+            val = f"{grp.idxmin()}: {_fmt_num(grp.min())}"; lbl = label or f"Bottom {group_col}"
         elif kpi_type == "% Change (Latest Month vs Prev Month)" and col in num_c and filter_col:
             dates = pd.to_datetime(df[filter_col], errors="coerce")
             df2 = df.copy(); df2["_dt"] = dates; df2 = df2.dropna(subset=["_dt"])
@@ -184,18 +184,26 @@ def _kpi_card_html(kpi):
             f'<div style="font-size:0.78rem;font-weight:700;color:{color};margin-top:3px;">'
             f'{arrow} {abs(change_pct):.1f}% vs prior period</div>'
         )
-    icon = escape(str(kpi.get("icon", "📊")))
-    value = escape(str(kpi.get("value", "—")))
+    icon   = escape(str(kpi.get("icon", "📊")))
+    value  = escape(str(kpi.get("value", "—")))
     prefix = escape(str(kpi.get("prefix", "")))
     suffix = escape(str(kpi.get("suffix", "")))
-    label = escape(str(kpi.get("label", "")))
+    label  = escape(str(kpi.get("label", "")))
+    # Long values (date ranges etc.) need wrapping — drop nowrap for those
+    full_val = f"{prefix}{value}{suffix}"
+    val_style = (
+        "font-size:0.95rem;font-weight:800;color:#4f6ef7;line-height:1.25;"
+        "margin-top:4px;word-break:break-word;overflow-wrap:anywhere;"
+    ) if len(full_val) > 14 else (
+        "font-size:1.15rem;font-weight:800;color:#4f6ef7;line-height:1.2;"
+        "margin-top:4px;white-space:nowrap;"
+    )
     return (
         f'<div style="background:rgba(79,110,247,0.07);border:1px solid rgba(79,110,247,0.18);'
-        f'border-radius:12px;padding:0.7rem 0.9rem;text-align:center;min-width:110px;'
-        f'box-shadow:0 2px 8px rgba(0,0,0,0.06);">'
+        f'border-radius:12px;padding:0.7rem 0.9rem;text-align:center;'
+        f'width:100%;box-shadow:0 2px 8px rgba(0,0,0,0.06);flex:1;">'
         f'<div style="font-size:1.2rem;line-height:1">{icon}</div>'
-        f'<div style="font-size:1.15rem;font-weight:800;color:#4f6ef7;line-height:1.2;margin-top:4px">'
-        f'{prefix}{value}{suffix}</div>'
+        f'<div style="{val_style}">{full_val}</div>'
         f'{arrow_html}'
         f'<div style="font-size:0.63rem;opacity:0.6;text-transform:uppercase;'
         f'letter-spacing:.07em;margin-top:4px;font-weight:600">{label}</div>'
@@ -287,9 +295,8 @@ def _render_kpi_section(df, readonly):
 # ─────────────────────────────────────────────────────────────────────────────
 def _render_layout_builder(charts):
     """
-    Present a visual 2-column grid. Each slot is a dropdown.
-    User assigns charts to specific row+slot positions.
-    Full-width toggle spans a chart across both columns.
+    Visual grid layout builder. Supports 2-column (default) and independent
+    3-column grid mode, each slot with a full-width toggle.
     """
     if not charts:
         return []
@@ -301,7 +308,6 @@ def _render_layout_builder(charts):
     opts       = [EMPTY] + [f"[{uid}] {title_map[uid][:45]}" for uid in uid_list]
     uid_of_opt = {f"[{uid}] {title_map[uid][:45]}": uid for uid in uid_list}
 
-    # Init order from session_state or default
     if "grid_order" not in st.session_state or \
             set(st.session_state.grid_order) != set(uid_list):
         st.session_state.grid_order     = uid_list.copy()
@@ -311,95 +317,94 @@ def _render_layout_builder(charts):
     full_width = dict(st.session_state.grid_fullwidth)
 
     st.markdown("### 🗂️ Arrange Charts in Dashboard Grid")
+
+    # ── Independent column-count selector ────────────────────────────────────
+    grid_cols_n = st.radio(
+        "Grid columns",
+        [2, 3],
+        index=0 if st.session_state.get("grid_cols_n", 2) == 2 else 1,
+        horizontal=True,
+        format_func=lambda x: f"{x}-Column Grid",
+        key="grid_cols_radio",
+    )
+    st.session_state.grid_cols_n = grid_cols_n
+
     st.caption(
-        "Each row has **2 slots**. Use the dropdowns to place charts. "
-        "Tick **Full Width** to make a chart span the whole row.")
+        f"Each row has **{grid_cols_n} slots**. "
+        "Tick **Full Width** to span the first slot across the entire row.")
 
-    # Calculate how many rows we need (at most)
-    max_rows = n  # worst case each chart full-width
-
-    # Build assignment UI
     st.markdown(
         '<div style="background:rgba(79,110,247,0.04);border:2px dashed rgba(79,110,247,0.25);'
         'border-radius:16px;padding:1.2rem 1.4rem;margin-bottom:1rem;">',
         unsafe_allow_html=True)
 
-    assigned_uids = []  # order user placed them
+    assigned_uids = []
     seen = set()
+    max_rows = n  # worst case: every chart is full-width
 
     for row_i in range(max_rows):
-        # Left slot
-        left_uid  = order[row_i*2]     if row_i*2     < len(order) else None
-        right_uid = order[row_i*2 + 1] if row_i*2 + 1 < len(order) else None
+        base      = row_i * grid_cols_n
+        slot_uids = [
+            order[base + s] if (base + s) < len(order) else None
+            for s in range(grid_cols_n)
+        ]
+        slot_opts = [
+            (f"[{u}] {title_map.get(u,'')[:45]}" if u and u in title_map else EMPTY)
+            for u in slot_uids
+        ]
 
-        left_opt  = (f"[{left_uid}] {title_map.get(left_uid,'')[:45]}"
-                     if left_uid and left_uid in title_map else EMPTY)
-        right_opt = (f"[{right_uid}] {title_map.get(right_uid,'')[:45]}"
-                     if right_uid and right_uid in title_map else EMPTY)
+        is_fw = full_width.get(slot_uids[0], False) if slot_uids[0] else False
 
-        is_fw = full_width.get(left_uid, False) if left_uid else False
-
-        # Row header
         st.markdown(
             f'<div style="font-size:0.75rem;font-weight:700;color:#64748b;'
             f'text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">'
-            f'Row {row_i+1}</div>',
+            f'Row {row_i + 1}</div>',
             unsafe_allow_html=True)
 
-        gc1, gc2, gc3 = st.columns([5, 5, 2])
+        # columns: N slots + 1 narrow full-width toggle
+        col_parts = st.columns([5] * grid_cols_n + [2])
+        fw_here = col_parts[-1].checkbox(
+            "Full width", value=is_fw, key=f"grid_fw_{row_i}",
+            help="Span first slot's chart across the entire row")
 
-        with gc1:
-            chosen_l = st.selectbox(
-                f"Slot {row_i+1}A",
-                opts,
-                index=opts.index(left_opt) if left_opt in opts else 0,
-                key=f"grid_l_{row_i}",
-                label_visibility="collapsed")
-
-        fw_here = False
-        with gc3:
-            fw_here = st.checkbox(
-                "Full width",
-                value=is_fw,
-                key=f"grid_fw_{row_i}",
-                help="Span this chart across the entire row")
-
-        if not fw_here:
-            with gc2:
-                chosen_r = st.selectbox(
-                    f"Slot {row_i+1}B",
-                    opts,
-                    index=opts.index(right_opt) if right_opt in opts else 0,
-                    key=f"grid_r_{row_i}",
-                    label_visibility="collapsed")
-        else:
-            chosen_r = EMPTY
-            with gc2:
-                st.markdown(
+        chosen_slots = []
+        for s in range(grid_cols_n):
+            if fw_here and s > 0:
+                col_parts[s].markdown(
                     '<div style="height:38px;display:flex;align-items:center;'
                     'background:rgba(79,110,247,0.06);border-radius:8px;'
                     'justify-content:center;font-size:0.8rem;opacity:0.5;">'
-                    '← Full width →</div>',
-                    unsafe_allow_html=True)
+                    '← Full width →</div>', unsafe_allow_html=True)
+                chosen_slots.append(EMPTY)
+            else:
+                chosen = col_parts[s].selectbox(
+                    f"Slot {row_i + 1}{chr(65 + s)}",
+                    opts,
+                    index=opts.index(slot_opts[s]) if slot_opts[s] in opts else 0,
+                    key=f"grid_s{s}_{row_i}",
+                    label_visibility="collapsed")
+                chosen_slots.append(chosen)
 
-        # Collect chosen uids
-        lu = uid_of_opt.get(chosen_l)
-        ru = uid_of_opt.get(chosen_r)
+        lu = uid_of_opt.get(chosen_slots[0])
         if lu and lu not in seen:
-            assigned_uids.append(lu); seen.add(lu)
+            assigned_uids.append(lu)
+            seen.add(lu)
             full_width[lu] = fw_here
-        if ru and ru not in seen:
-            assigned_uids.append(ru); seen.add(ru)
 
-        # Stop adding rows when all charts placed or we hit an empty row
-        if lu is None and ru is None:
+        if not fw_here:
+            for s in range(1, grid_cols_n):
+                ru = uid_of_opt.get(chosen_slots[s])
+                if ru and ru not in seen:
+                    assigned_uids.append(ru)
+                    seen.add(ru)
+
+        if all(uid_of_opt.get(c) is None for c in chosen_slots):
             break
         if len(seen) >= n:
             break
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Append any unplaced charts at end
     for uid in uid_list:
         if uid not in seen:
             assigned_uids.append(uid)
@@ -407,6 +412,7 @@ def _render_layout_builder(charts):
     if st.button("✅ Apply Layout", type="primary", key="apply_layout"):
         st.session_state.grid_order     = assigned_uids
         st.session_state.grid_fullwidth = full_width
+        st.session_state.grid_cols_n    = grid_cols_n
         _persist()
         st.success("✅ Layout applied!")
         st.rerun()
@@ -496,30 +502,32 @@ def _render_chart(item, idx, total, viewing_saved):
     yl      = meta.get("y_label","")
 
     fig_show = _apply_axes(fig, xl, yl)
-    # Apply custom title + axis readability fixes into a deepcopy
+    # Prepare display figure — apply axis labels and styling but do NOT embed
+    # the title inside the Plotly figure (it is rendered as a heading above the
+    # chart instead, so it only appears once).
     try:
         import copy as _copy
         fig_show = _copy.deepcopy(fig_show)
-        safe_display = escape(str(display))
-        safe_sub = escape(str(sub))
-        fig_show.update_layout(title_text=safe_display)
+
         if sub:
+            safe_sub = escape(str(sub))
             fig_show.update_layout(title=dict(
-                text=f"{safe_display}<br><sup style='font-size:11px;color:#64748b'>{safe_sub}</sup>"))
+                text=f"<sup style='font-size:11px;color:#64748b'>{safe_sub}</sup>",
+                font=dict(size=11)))
+        else:
+            fig_show.update_layout(title_text="")
 
         # ── Axis readability: angle x-tick labels, shrink font, expand margin
         is_horiz = any(getattr(t, "orientation", "v") == "h"
                        for t in fig_show.data if hasattr(t, "orientation"))
         if is_horiz:
-            # Horizontal bar: y-axis carries categories — clip long labels
             fig_show.update_yaxes(tickfont=dict(size=10), automargin=True)
             fig_show.update_xaxes(tickfont=dict(size=10))
-            fig_show.update_layout(margin=dict(l=120, r=20, t=48, b=20))
+            fig_show.update_layout(margin=dict(l=120, r=20, t=28, b=20))
         else:
-            # Vertical bar / other: angle x-axis ticks so they don't collide
             fig_show.update_xaxes(tickangle=-35, tickfont=dict(size=10), automargin=True)
             fig_show.update_yaxes(tickfont=dict(size=10), automargin=True)
-            fig_show.update_layout(margin=dict(l=20, r=20, t=48, b=80))
+            fig_show.update_layout(margin=dict(l=20, r=20, t=28, b=80))
     except Exception:
         pass
 
@@ -554,6 +562,14 @@ def _render_chart(item, idx, total, viewing_saved):
                     st.session_state.grid_order = [u for u in st.session_state.grid_order
                                                    if u != uid]
                 _persist(); st.rerun()
+
+    # ── Chart title rendered once as a heading (not inside Plotly) ───────────
+    st.markdown(
+        f'<div style="font-size:0.93rem;font-weight:700;color:#1e293b;margin-bottom:2px;">'
+        f'{escape(str(display))}</div>'
+        + (f'<div style="font-size:0.78rem;color:#64748b;margin-bottom:4px;">'
+           f'{escape(str(sub))}</div>' if sub else ""),
+        unsafe_allow_html=True)
 
     st.plotly_chart(fig_show, use_container_width=True)
 
@@ -596,38 +612,50 @@ def _render_chart(item, idx, total, viewing_saved):
 # Grid renderer — respects grid_order and grid_fullwidth
 # ─────────────────────────────────────────────────────────────────────────────
 def _render_grid(ordered_charts, viewing_saved):
-    total = len(ordered_charts)
-    fw    = st.session_state.get("grid_fullwidth", {})
+    total    = len(ordered_charts)
+    fw       = st.session_state.get("grid_fullwidth", {})
+    n_cols   = st.session_state.get("grid_cols_n", 2)  # 2 or 3
     i = 0
     while i < total:
-        item = ordered_charts[i]
-        uid  = item[0]
+        item     = ordered_charts[i]
+        uid      = item[0]
         item_meta = item[6] if viewing_saved and len(item) > 6 else _meta(uid)
-        is_fw = fw.get(uid, False) or item_meta.get("full_width", False)
+        is_fw    = fw.get(uid, False) or item_meta.get("full_width", False)
 
-        if is_fw or (i == total-1 and total % 2 == 1):
-            # Full-width
+        if is_fw or i == total - 1:
+            # Full-width or lone last chart
             with st.container():
                 _render_chart(item, i, total, viewing_saved)
             st.markdown("<br>", unsafe_allow_html=True)
             i += 1
         else:
-            # Try to pair
-            if i+1 < total:
-                next_item = ordered_charts[i+1]
-                next_meta = next_item[6] if viewing_saved and len(next_item) > 6 else _meta(next_item[0])
-                next_fw = fw.get(next_item[0], False) or next_meta.get("full_width", False)
-                if not next_fw:
-                    col1, col2 = st.columns(2, gap="large")
-                    with col1: _render_chart(item,      i,   total, viewing_saved)
-                    with col2: _render_chart(next_item, i+1, total, viewing_saved)
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    i += 2
-                    continue
-            with st.container():
-                _render_chart(item, i, total, viewing_saved)
-            st.markdown("<br>", unsafe_allow_html=True)
-            i += 1
+            # Try to fill a full row of n_cols
+            row_items = [item]
+            for s in range(1, n_cols):
+                if i + s < total:
+                    ni   = ordered_charts[i + s]
+                    n_fw = fw.get(ni[0], False) or (
+                        ni[6] if viewing_saved and len(ni) > 6 else _meta(ni[0])
+                    ).get("full_width", False)
+                    if not n_fw:
+                        row_items.append(ni)
+                    else:
+                        break
+                else:
+                    break
+
+            if len(row_items) > 1:
+                row_cols = st.columns(len(row_items), gap="large")
+                for ci, (ri, rc) in enumerate(zip(row_items, row_cols)):
+                    with rc:
+                        _render_chart(ri, i + ci, total, viewing_saved)
+                st.markdown("<br>", unsafe_allow_html=True)
+                i += len(row_items)
+            else:
+                with st.container():
+                    _render_chart(item, i, total, viewing_saved)
+                st.markdown("<br>", unsafe_allow_html=True)
+                i += 1
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -645,6 +673,35 @@ def page_dashboard():
     viewing_saved = "view_session_id" in st.session_state
     is_editing    = "editing_session_id" in st.session_state
     df            = st.session_state.get("df")
+
+    # ── When editing a saved session, restore its KPIs + meta on first load ──
+    if is_editing and "kpis" not in st.session_state:
+        eid = st.session_state.editing_session_id
+        sm  = get_session_meta(eid, st.session_state.get("user_id"))
+        if sm:
+            try:
+                st.session_state.kpis = json.loads(sm.get("kpis_json", "[]"))
+            except Exception:
+                st.session_state.kpis = []
+            if "layout_mode" not in st.session_state:
+                st.session_state.layout_mode = sm.get("layout_mode", "portrait")
+            if "dashboard_title" not in st.session_state:
+                st.session_state.dashboard_title = sm.get("dashboard_title", "")
+
+    # ── When editing, also restore per-chart notes from the saved session ─────
+    if is_editing and not st.session_state.get("_edit_notes_loaded"):
+        eid    = st.session_state.editing_session_id
+        loaded = get_session_charts(eid, st.session_state.get("user_id"))
+        for uid, title, fig, desc, auto, ctype, meta in loaded:
+            # Only seed note if user hasn't already typed something this session
+            note_key = f"desc_{uid}"
+            if note_key not in st.session_state and desc:
+                st.session_state[note_key] = desc
+            # Also restore chart meta (custom title, subtitle etc.) if not set
+            meta_key = f"chart_meta_{uid}"
+            if meta_key not in st.session_state and meta:
+                st.session_state[meta_key] = meta
+        st.session_state._edit_notes_loaded = True
 
     # Load saved session data once
     if viewing_saved:
@@ -673,7 +730,7 @@ def page_dashboard():
         st.session_state.setdefault("layout_mode",     sm["layout_mode"])
         if "kpis" not in st.session_state:
             try:   st.session_state.kpis = json.loads(sm["kpis_json"])
-            except: st.session_state.kpis = []
+            except Exception: st.session_state.kpis = []
         df = None  # No live df when viewing saved
     else:
         sname = f"Analysis — {st.session_state.get('file_name','')}"
@@ -701,7 +758,13 @@ def page_dashboard():
             st.session_state.dashboard_title = ti; _persist()
 
     display_title = st.session_state.get("dashboard_title") or sname
-    st.header(f"📊 {display_title}")
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    st.markdown(
+        f'<div style="text-align:center;margin-bottom:0.3rem;">'
+        f'<span style="font-size:1.6rem;font-weight:800;color:#4f6ef7;">📊 {escape(display_title)}</span><br>'
+        f'<span style="font-size:0.78rem;color:#94a3b8;">Generated by Lytrize &middot; {now_str}</span>'
+        f'</div>',
+        unsafe_allow_html=True)
 
     # ── Layout mode ───────────────────────────────────────────────────────────
     if not viewing_saved:
@@ -785,7 +848,8 @@ def _export_row(charts, sname, viewing_saved):
     with e1:
         html = generate_html_report(export_charts, sname,
                                     orientation=orient, kpis=kpis,
-                                    dashboard_title=dash_title)
+                                    dashboard_title=dash_title,
+                                    grid_cols_n=st.session_state.get("grid_cols_n", 2))
         st.download_button("🌐 Download HTML", html,
                            file_name=f"{safe_file}.html",
                            mime="text/html", use_container_width=True)
@@ -796,7 +860,8 @@ def _export_row(charts, sname, viewing_saved):
                 try:
                     st.session_state[pk] = generate_pdf_report(
                         export_charts, sname, orientation=orient,
-                        kpis=kpis, dashboard_title=dash_title)
+                        kpis=kpis, dashboard_title=dash_title,
+                        grid_cols_n=st.session_state.get("grid_cols_n", 2))
                 except Exception as e:
                     st.error(f"PDF error: {e}")
         if pk in st.session_state:
@@ -818,8 +883,9 @@ def _do_save(sname_in, charts, df):
         kpis_json       = json.dumps(st.session_state.get("kpis",[])),
         layout_mode     = st.session_state.get("layout_mode","portrait"))
     clear_draft(st.session_state.user_id)
-    st.session_state.pop("editing_session_id",   None)
-    st.session_state.pop("editing_session_name", None)
+    st.session_state.pop("editing_session_id",    None)
+    st.session_state.pop("editing_session_name",  None)
+    st.session_state.pop("_edit_notes_loaded",    None)
     st.success(f"✅ Saved as '{sname_in}'!")
 
 

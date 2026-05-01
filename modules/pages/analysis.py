@@ -6,6 +6,7 @@ All config widgets are reactive; options like Top N and Dual Y show/hide instant
 
 import uuid, json
 import streamlit as st
+import streamlit.components.v1 as _comp
 from modules.database import validate_token, log_activity, save_draft
 from modules.analysis import (
     ANALYSIS_OPTIONS, _NEEDS_AXES, _NO_FORM,
@@ -137,7 +138,6 @@ def page_analysis():
         analysis_name = next(o["name"] for o in ANALYSIS_OPTIONS if o["id"] == active)
         st.markdown("---")
         # Auto-scroll to Configure section for better UX
-        import streamlit.components.v1 as _comp
         _comp.html("""<script>
         setTimeout(function(){
             var els = window.parent.document.querySelectorAll('h3');

@@ -4,7 +4,10 @@ Logo is text-only here per spec (#10).
 """
 
 import streamlit as st
-from modules.database import login_user, register_user, validate_token, create_token, log_activity
+from modules.database import (
+    login_user, register_user, validate_token, create_token,
+    log_activity, delete_user_db,
+)
 from modules.ui.css import BRAND_NAME, inject_footer, logo_data_uri
 
 
@@ -91,5 +94,70 @@ def page_auth():
                         st.rerun()
                     else:
                         st.error(msg)
+
+    inject_footer()
+
+
+def page_profile():
+    """User profile page — account info and danger-zone actions."""
+    from modules.ui.css import render_logo
+    render_logo()
+
+    if st.button("← Back to Home"):
+        st.session_state.page = "home"
+        st.rerun()
+
+    username = st.session_state.get("username", "")
+    user_id  = st.session_state.get("user_id")
+
+    st.markdown(f"## 👤 Profile — {username}")
+    st.markdown("---")
+
+    # ── Danger Zone ───────────────────────────────────────────────────────────
+    st.markdown(
+        '<div style="border:1.5px solid #ef4444;border-radius:12px;padding:1rem 1.2rem;'
+        'background:rgba(239,68,68,0.04);margin-top:1rem;">'
+        '<p style="color:#ef4444;font-weight:700;font-size:0.95rem;margin:0 0 0.5rem 0;">'
+        '⚠️ Danger Zone</p>'
+        '<p style="font-size:0.84rem;opacity:0.8;margin:0;">'
+        'Deleting your account is <strong>permanent and irreversible</strong>. '
+        'All saved sessions, charts, KPIs, and your login will be erased immediately.'
+        '</p></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Two-step confirmation: show confirm UI only after first button press
+    if "confirm_delete_account" not in st.session_state:
+        st.session_state.confirm_delete_account = False
+
+    if not st.session_state.confirm_delete_account:
+        if st.button("🗑️ Delete My Account", type="secondary"):
+            st.session_state.confirm_delete_account = True
+            st.rerun()
+    else:
+        st.warning(
+            "Are you sure? This will permanently delete your account and **all saved sessions**. "
+            "This cannot be undone."
+        )
+        col_yes, col_no, _ = st.columns([1, 1, 4])
+        with col_yes:
+            if st.button("✅ Yes, delete everything", type="primary",
+                         use_container_width=True):
+                ok = delete_user_db(user_id)
+                if ok:
+                    # Wipe session state fully and redirect to auth
+                    for k in list(st.session_state.keys()):
+                        del st.session_state[k]
+                    st.query_params.clear()
+                    st.session_state.page = "auth"
+                    st.success("Your account has been deleted.")
+                    st.rerun()
+                else:
+                    st.error("Something went wrong — account could not be deleted. Try again.")
+        with col_no:
+            if st.button("✗ Cancel", use_container_width=True):
+                st.session_state.confirm_delete_account = False
+                st.rerun()
 
     inject_footer()
