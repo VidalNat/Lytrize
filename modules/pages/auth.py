@@ -16,10 +16,7 @@ Authentication flow:
 CONTRIBUTING -- to add a new profile setting:
     Add a new st.expander() block in page_profile() below the existing sections.
     Use the same confirm-before-action pattern as the account deletion block.
-"""
-"""
-modules/pages/auth.py -- Login & Registration page.
-Logo is text-only here per spec (#10).
+Logo is text-only on the auth page per spec (#10).
 """
 
 import streamlit as st

@@ -38,12 +38,47 @@ from modules.database import validate_token, log_activity, save_draft
 from modules.analysis import (
     ANALYSIS_OPTIONS, _NEEDS_AXES, _NO_FORM,
     render_config_panel, _collect_kwargs, _run,
+    render_config_panel_scoped, _collect_kwargs_scoped,
 )
 from modules.analysis.runners   import run_descriptive
 from modules.analysis.data_quality import run_data_quality
 from modules.analysis.outlier   import OUTLIER_HELP
 from modules.charts import charts_to_json, clean_insight_text, generate_chart_insights
 from modules.ui.css import inject_footer, render_logo
+
+
+def _restore_edit_notes() -> None:
+    """
+    Re-seed desc_{uid} keys for all charts in the current editing session.
+
+    Called once each time analysis.py is entered in edit mode so that notes
+    written on a previous visit survive Streamlit's widget-key cleanup that
+    happens when the user navigates away to upload.py and back.
+
+    Guard: skipped when _analysis_notes_loaded is already True so the DB is
+    hit at most once per edit session.  The flag is cleared by home.py's Edit
+    button (via _edit_notes_loaded) and whenever a new editing_session_id is
+    set, ensuring a fresh load for every new edit.
+    """
+    if st.session_state.get("_analysis_notes_loaded"):
+        return
+    eid = st.session_state.get("editing_session_id")
+    uid = st.session_state.get("user_id")
+    if not eid or not uid:
+        st.session_state["_analysis_notes_loaded"] = True
+        return
+    from modules.database import get_session_charts
+    try:
+        saved = get_session_charts(eid, uid)
+        for chart_uid, _title, _fig, desc, _auto, _ctype, _meta in saved:
+            note_key = f"desc_{chart_uid}"
+            # Only restore if key is absent or empty-string (Streamlit cleared it).
+            # Never overwrite a note the user has already typed in this session.
+            if desc and not st.session_state.get(note_key):
+                st.session_state[note_key] = desc
+    except Exception:
+        pass  # DB errors must never break the analysis page.
+    st.session_state["_analysis_notes_loaded"] = True
 
 
 def _persist_draft(page="analysis"):
@@ -99,6 +134,7 @@ def page_analysis():
 
     # ── Edit mode without df ──────────────────────────────────────────────────
     if df is None and is_editing:
+        _restore_edit_notes()   # Re-seed notes cleared by Streamlit widget cleanup
         sname  = st.session_state.get("editing_session_name", "Session")
         fname  = st.session_state.get("editing_file_name",    "the original file")
         charts = st.session_state.get("charts", [])
@@ -116,6 +152,9 @@ def page_analysis():
         c1, c2 = st.columns(2)
         with c1:
             if st.button("📂 Upload Dataset to Add Charts", use_container_width=True):
+                # Persist current notes + chart state to draft before leaving,
+                # so a page refresh during upload doesn't wipe in-progress work.
+                _persist_draft()
                 st.session_state.page = "upload"; st.rerun()
         with c2:
             if st.button("📊 Go to Dashboard →", use_container_width=True):
@@ -136,9 +175,59 @@ def page_analysis():
         st.session_state.page = "home"; st.rerun()
 
     if is_editing:
+        _restore_edit_notes()   # Re-seed notes that Streamlit cleared during upload navigation
         sname = st.session_state.get("editing_session_name", "Session")
         st.info(f"✏️ Edit mode -- adding charts to **{sname}**. "
                 f"Click **Proceed to Dashboard** when done.")
+
+    # ── Chart Regeneration Panel ─────────────────────────────────────────────
+    # Triggered when user clicks "🔄 Edit Chart" on an existing chart.
+    # Shows the full config panel for that chart's analysis type, scoped to
+    # its uid so widget keys never collide with the main analysis panel.
+    regen_uid  = st.session_state.get("_regen_uid")
+    regen_type = st.session_state.get("_regen_type", "")
+    if regen_uid and regen_type and df is not None:
+        chart_entry = next(
+            (c for c in st.session_state.get("charts", []) if c[0] == regen_uid), None)
+        if chart_entry:
+            regen_title = chart_entry[1]
+            type_label  = next(
+                (o["name"] for o in ANALYSIS_OPTIONS if o["id"] == regen_type),
+                regen_type)
+            st.markdown(f"### 🔄 Regenerate Chart — *{regen_title}* ({type_label})")
+            st.caption("Adjust options below then click **Apply Changes** to replace the chart.")
+
+            render_config_panel_scoped(regen_uid, regen_type, df)
+
+            ra, rb, _ = st.columns([1, 1, 5])
+            with ra:
+                if st.button("✅ Apply Changes", key="regen_apply", type="primary",
+                             use_container_width=True):
+                    kwargs = _collect_kwargs_scoped(regen_uid, regen_type, df)
+                    new_charts = _run(regen_type, df, **kwargs)
+                    if new_charts:
+                        # Replace the existing chart in-place (keep uid + position)
+                        new_fig   = new_charts[0][2]  # take first generated chart
+                        new_title = new_charts[0][1]
+                        st.session_state.charts = [
+                            (c[0], new_title if c[0] == regen_uid else c[1],
+                             new_fig  if c[0] == regen_uid else c[2])
+                            for c in st.session_state.get("charts", [])
+                        ]
+                        # Refresh auto-insights for the replaced chart
+                        st.session_state.pop(f"auto_insights_{regen_uid}", None)
+                        st.session_state[f"chart_type_{regen_uid}"] = regen_type
+                    st.session_state.pop("_regen_uid",  None)
+                    st.session_state.pop("_regen_type", None)
+                    _persist_draft()
+                    st.rerun()
+            with rb:
+                if st.button("✕ Cancel", key="regen_cancel", use_container_width=True):
+                    st.session_state.pop("_regen_uid",  None)
+                    st.session_state.pop("_regen_type", None)
+                    st.rerun()
+
+            st.markdown("---")
 
     st.markdown("## 🔬 Select Analysis Type")
 
@@ -255,7 +344,7 @@ def page_analysis():
                 _persist_draft()
                 st.rerun()
 
-        _render_chart_list(st.session_state.charts, edit_mode=False)
+        _render_chart_list(st.session_state.charts, edit_mode=is_editing)
 
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🎯 Proceed to Dashboard →", type="primary"):
@@ -267,49 +356,161 @@ def page_analysis():
     inject_footer()
 
 
+def _chart_meta(uid) -> dict:
+    """Read chart meta from session_state (same structure as dashboard._meta)."""
+    k = f"chart_meta_{uid}"
+    if k not in st.session_state:
+        st.session_state[k] = {}
+    return st.session_state[k]
+
+
+def _set_chart_meta(uid, **kw) -> None:
+    """Write chart meta to session_state."""
+    k = f"chart_meta_{uid}"
+    if k not in st.session_state:
+        st.session_state[k] = {}
+    st.session_state[k].update(kw)
+
+
 def _render_chart_list(charts, edit_mode=False):
-    """Render chart cards with delete, insights, and notes. Title editing is in Dashboard → Chart Settings."""
+    """Render chart cards with full settings, insights, and notes in edit mode."""
     col_descs = st.session_state.get("col_descriptions", {})
     for uid, title, fig in charts:
-        # ── Compact control row (delete only -- title lives inside the Plotly chart) ──
-        ctrl = st.columns([11, 1])
+        meta = _chart_meta(uid)
+
+        # ── Header row: display title + action buttons ────────────────────────
+        display_title = meta.get("custom_title") or title
+        df_available  = st.session_state.get("df") is not None
+        ctrl = st.columns([9, 2, 1])
+        with ctrl[0]:
+            st.markdown(
+                f'''<div style="font-size:1rem;font-weight:700;color:#1e293b;
+                margin-bottom:0.2rem;">{display_title}</div>''',
+                unsafe_allow_html=True)
+            if meta.get("subtitle"):
+                st.caption(meta["subtitle"])
         with ctrl[1]:
+            chart_type = st.session_state.get(f"chart_type_{uid}", "")
+            if chart_type and chart_type not in ("descriptive", "data_quality"):
+                if df_available:
+                    if st.button("🔄 Edit Chart", key=f"regen_btn_{uid}",
+                                 use_container_width=True,
+                                 help="Re-run this chart with new columns / settings"):
+                        st.session_state._regen_uid  = uid
+                        st.session_state._regen_type = chart_type
+                        # Clear old scoped widget keys so panel starts fresh
+                        for k in list(st.session_state.keys()):
+                            if k.startswith(f"_edit_{uid}_"):
+                                del st.session_state[k]
+                        st.rerun()
+                else:
+                    st.button("🔄 Edit Chart", key=f"regen_btn_{uid}",
+                              use_container_width=True, disabled=True,
+                              help="Upload the original dataset first to regenerate this chart")
+        with ctrl[2]:
             if st.button("✕", key=f"del_{uid}", help="Remove this chart"):
                 log_activity(st.session_state.get("user_id",0),"chart_deleted",f"title='{title}'")
                 st.session_state.charts = [c for c in st.session_state.charts if c[0] != uid]
+                st.session_state.pop("_regen_uid", None)
                 _persist_draft()
                 st.rerun()
 
-        # Apply axis readability before rendering
+        # ── Chart plot ────────────────────────────────────────────────────────
         import copy as _acopy
         fig_show = _acopy.deepcopy(fig)
+        xl = meta.get("x_label", "")
+        yl = meta.get("y_label", "")
+        if xl: fig_show.update_xaxes(title_text=xl)
+        if yl: fig_show.update_yaxes(title_text=yl)
+        fig_show.update_layout(title_text="")
         is_horiz = any(getattr(t, "orientation", "v") == "h"
                        for t in fig_show.data if hasattr(t, "orientation"))
         if is_horiz:
             fig_show.update_yaxes(tickfont=dict(size=10), automargin=True)
             fig_show.update_xaxes(tickfont=dict(size=10))
-            fig_show.update_layout(margin=dict(l=120, r=20, t=48, b=20))
+            fig_show.update_layout(margin=dict(l=120, r=20, t=28, b=20))
         else:
             fig_show.update_xaxes(tickangle=-35, tickfont=dict(size=10), automargin=True)
             fig_show.update_yaxes(tickfont=dict(size=10), automargin=True)
-            fig_show.update_layout(margin=dict(l=20, r=20, t=48, b=80))
+            fig_show.update_layout(margin=dict(l=20, r=20, t=28, b=80))
         st.plotly_chart(fig_show, use_container_width=True)
 
-        # ── Insights ──────────────────────────────────────────────────────────
-        chart_type    = st.session_state.get(f"chart_type_{uid}", "")
-        auto_insights = st.session_state.get(f"auto_insights_{uid}")
-        if auto_insights is None:
-            auto_insights = generate_chart_insights(chart_type, title, fig, col_descs)
-            st.session_state[f"auto_insights_{uid}"] = auto_insights
+        # ── Chart Settings expander ───────────────────────────────────────────
+        with st.expander("⚙️ Chart Settings", expanded=False):
+            new_title = st.text_input(
+                "Chart Title",
+                value=meta.get("custom_title", "") or title,
+                key=f"act_{uid}")
+            ca, cb = st.columns(2)
+            with ca:
+                new_sub = st.text_input(
+                    "Subtitle",
+                    value=meta.get("subtitle", ""),
+                    placeholder="Optional…",
+                    key=f"asub_{uid}")
+            with cb:
+                pass
+            cc, cd = st.columns(2)
+            with cc:
+                new_xl = st.text_input("X-Axis Label",
+                                       value=meta.get("x_label", ""),
+                                       key=f"axl_{uid}")
+            with cd:
+                new_yl = st.text_input("Y-Axis Label",
+                                       value=meta.get("y_label", ""),
+                                       key=f"ayl_{uid}")
 
+            # Auto-insights toggle
+            chart_type    = st.session_state.get(f"chart_type_{uid}", "")
+            auto_insights = st.session_state.get(f"auto_insights_{uid}")
+            if auto_insights is None:
+                auto_insights = generate_chart_insights(chart_type, title, fig, col_descs)
+                st.session_state[f"auto_insights_{uid}"] = auto_insights
+
+            show_ai  = st.checkbox("Show auto-insights in export",
+                                   value=meta.get("show_auto_insights", True),
+                                   key=f"asai_{uid}")
+            hidden   = set(meta.get("hidden_insights", []))
+            new_hidden = set()
+            if auto_insights and show_ai:
+                st.markdown("**Toggle insights:**")
+                for i, ins in enumerate(auto_insights):
+                    label = clean_insight_text(ins)
+                    if not st.checkbox(
+                            label[:80] + ("…" if len(label) > 80 else ""),
+                            value=i not in hidden,
+                            key=f"ains_{uid}_{i}"):
+                        new_hidden.add(i)
+
+            if st.button("💾 Save Settings", key=f"asave_{uid}", type="primary"):
+                _set_chart_meta(uid,
+                                custom_title=new_title,
+                                subtitle=new_sub,
+                                x_label=new_xl,
+                                y_label=new_yl,
+                                show_auto_insights=show_ai,
+                                hidden_insights=list(new_hidden))
+                # Keep title in charts list in sync
+                st.session_state.charts = [
+                    (c[0], new_title if c[0] == uid else c[1], c[2])
+                    for c in st.session_state.get("charts", [])
+                ]
+                _persist_draft()
+                st.success("Settings saved!")
+                st.rerun()
+
+        # ── Insights (read view below chart) ──────────────────────────────────
         if auto_insights:
-            with st.expander("💡 Insights", expanded=not edit_mode):
+            with st.expander("💡 Auto-Insights", expanded=False):
                 for ins in auto_insights:
                     st.markdown(f"- {clean_insight_text(ins)}")
 
         # ── Analysis Notes ────────────────────────────────────────────────────
+        if f"desc_{uid}" not in st.session_state:
+            st.session_state[f"desc_{uid}"] = ""
         st.text_area(
             "✍️ Analysis Notes (saved to Dashboard)",
-            value=st.session_state.get(f"desc_{uid}", ""),
             key=f"desc_{uid}",
-            placeholder="Add your findings or observations here…")
+            placeholder="Add your findings here, will replace previous notes…")
+
+        st.markdown("---")

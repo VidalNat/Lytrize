@@ -8,7 +8,7 @@ activity logging, and draft session persistence.
 ──────────────────────────────────────────────────────────────────────────────
 DATABASE BACKEND
 ──────────────────────────────────────────────────────────────────────────────
-Default: SQLite file at  lytrize.db  (or $DATALYZE_DB_PATH).
+Default: SQLite file at  lytrize.db  (or $LYTRIZE_DB_PATH).
 Postgres: set DATABASE_URL=postgresql://user:pass@host/dbname in the environment.
           Requires: pip install psycopg2-binary
 
@@ -58,9 +58,9 @@ import datetime
 from typing import Optional
 
 # ── Environment configuration ─────────────────────────────────────────────────
-# Override DB_PATH via DATALYZE_DB_PATH env var to point at a custom SQLite file.
+# Override DB_PATH via LYTRIZE_DB_PATH env var to point at a custom SQLite file.
 # Override to Postgres by setting DATABASE_URL to a postgresql:// URI.
-DB_PATH = os.environ.get("DATALYZE_DB_PATH", "lytrize.db")
+DB_PATH = os.environ.get("LYTRIZE_DB_PATH", "lytrize.db")
 DB_URL  = os.environ.get("DATABASE_URL", "")
 _PG     = DB_URL.startswith(("postgresql://", "postgres://"))
 

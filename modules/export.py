@@ -1,46 +1,20 @@
 """
-modules/export.py - HTML & PDF export engine.
-==============================================
+modules/export.py - HTML export engine.
+========================================
 
-Exports the active dashboard as either a standalone HTML file or a PDF.
-
-PDF Architecture (Playwright-based):
-    - generate_html_report() builds a self-contained HTML page with embedded
-      Plotly charts (interactive JS, full fidelity).
-    - generate_pdf_report() feeds that HTML to a headless Chromium browser
-      via Playwright, waits for all charts to finish rendering, then prints
-      the page to PDF using the browser's native print engine.
-    - This approach is cloud-safe: no Kaleido process, no X11, no system
-      font dependencies. Works on Streamlit Community Cloud out of the box.
-
-Why not Kaleido?
-    Kaleido spawns a sandboxed subprocess which is blocked on Streamlit Cloud
-    (and many other PaaS hosts). Charts silently fail → "[Chart unavailable]".
-
-Why not WeasyPrint?
-    WeasyPrint does not execute JavaScript, so Plotly charts never render.
-
-CONTRIBUTING:
-    To change PDF page size / margins, adjust the `page.pdf(...)` call at
-    the bottom of generate_pdf_report().
-    To change the visual layout, edit generate_html_report().
+Generates a self-contained HTML dashboard report from the active charts.
+Open the downloaded file in any browser, then use File → Print → Save as PDF
+for a pixel-perfect PDF with full chart rendering — no server-side dependencies.
 """
 
 import re
 import copy
 import datetime
-import subprocess
-import sys
-import tempfile
-import os
 from html import escape
 from modules.charts import clean_insight_text
 
-# ── one-time browser-install flag ─────────────────────────────────────────────
-_BROWSERS_READY = False
 
-
-# ── Emoji / encoding helpers ──────────────────────────────────────────────────
+# ── HTML helpers ──────────────────────────────────────────────────────────────
 _EMOJI_RE = re.compile(
     "[\U0001F300-\U0001FFFF"
     "\U00002500-\U00002BFF"
@@ -171,21 +145,50 @@ def generate_html_report(charts, session_name, orientation="portrait",
   <title>{safe_title} -- Lytrize</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+
+    /* ── Base (screen) ───────────────────────────────────────────────── */
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{ font-family: 'Inter', sans-serif; padding: 2rem; background: #f8fafc; color: #0f172a; }}
+    body {{
+      font-family: 'Inter', sans-serif;
+      padding: 2rem;
+      background: #f8fafc;
+      color: #0f172a;
+    }}
     .wrapper {{ max-width: {max_width}; margin: auto; width: 100%; }}
+
     .report-header {{ text-align: center; margin-bottom: 2rem; }}
     .report-header h1 {{ font-size: 2rem; font-weight: 800; color: #4f6ef7; }}
     .report-header .meta {{ font-size: 0.8rem; color: #64748b; margin-top: 0.4rem; }}
+
+    .print-hint {{
+       text-align: center;
+      border: none;            
+      padding: 0.5rem 3rem;   
+      margin: 2rem auto 1.2rem;   
+      width: fit-content;         
+      font-size: 0.78rem;
+      color: #94a3b8;
+    }}
+
     .kpi-row {{ display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; justify-content: center; }}
-    .kpi-card {{ background: white; border-radius: 12px; padding: 1rem 1.4rem; text-align: center;
-                 box-shadow: 0 2px 12px rgba(0,0,0,0.07); min-width: 130px; flex: 1; max-width: 220px; }}
+    .kpi-card {{
+      background: white;
+      border-radius: 12px;
+      padding: 1rem 1.4rem;
+      text-align: center;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.07);
+      min-width: 130px;
+      flex: 1;
+      max-width: 220px;
+      border: 1px solid #e2e8f0;
+    }}
     .kpi-icon  {{ font-size: 1.4rem; margin-bottom: 0.25rem; }}
-    .kpi-value {{ font-size: 1.4rem; font-weight: 800; color: #4f6ef7; line-height: 1.2;
-                  overflow: visible; }}
+    .kpi-value {{ font-size: 1.4rem; font-weight: 800; color: #4f6ef7; line-height: 1.2; overflow: visible; }}
     .kpi-label {{ font-size: 0.72rem; color: #64748b; margin-top: 0.2rem; font-weight: 600;
                   text-transform: uppercase; letter-spacing: 0.06em; }}
+
     hr {{ border: none; border-top: 1px solid #e2e8f0; margin: 1.5rem 0; }}
+
     .grid {{
       display: grid;
       grid-template-columns: {grid_css_cols};
@@ -197,28 +200,98 @@ def generate_html_report(charts, session_name, orientation="portrait",
       border-radius: 14px;
       padding: 1.2rem;
       box-shadow: 0 2px 16px rgba(0,0,0,0.07);
+      border: 1px solid #e2e8f0;
       min-width: 0;
       width: 100%;
       overflow: hidden;
     }}
     .chart-card h2 {{ font-size: 0.95rem; font-weight: 700; margin-bottom: 0.15rem; color: #1e293b; }}
     .subtitle {{ font-size: 0.78rem; color: #64748b; margin-bottom: 0.6rem; }}
-    .chart-wrap {{
-      width: 100%;
-      overflow: hidden;
-      display: block;
-    }}
+    .chart-wrap {{ width: 100%; overflow: hidden; display: block; }}
     .chart-wrap .js-plotly-plot {{ width: 100% !important; display: block !important; }}
-    .chart-wrap .plotly        {{ width: 100% !important; }}
-    .chart-wrap .plot-container {{ width: 100% !important; }}
-    .chart-wrap svg.main-svg   {{ width: 100% !important; }}
-    .insights {{ background: #f0f4ff; border-left: 3px solid #4f6ef7; border-radius: 6px;
-                 padding: 0.6rem 0.9rem; margin-top: 0.7rem; font-size: 0.8rem; }}
+    .chart-wrap .plotly          {{ width: 100% !important; }}
+    .chart-wrap .plot-container  {{ width: 100% !important; }}
+    .chart-wrap svg.main-svg     {{ width: 100% !important; }}
+    .insights {{
+      background: #f0f4ff;
+      border-left: 3px solid #4f6ef7;
+      border-radius: 6px;
+      padding: 0.6rem 0.9rem;
+      margin-top: 0.7rem;
+      font-size: 0.8rem;
+    }}
     .insights strong {{ display: block; margin-bottom: 0.25rem; }}
     .insights ul {{ margin-left: 1rem; }}
     .insights li {{ margin-bottom: 0.2rem; line-height: 1.5; }}
-    .notes {{ background: #fdf4ff; padding: 0.6rem 0.9rem; border-left: 4px solid #8b5cf6;
-              margin-top: 0.7rem; border-radius: 4px; font-size: 0.82rem; font-style: italic; }}
+    .notes {{
+      background: #fdf4ff;
+      padding: 0.6rem 0.9rem;
+      border-left: 4px solid #8b5cf6;
+      margin-top: 0.7rem;
+      border-radius: 4px;
+      font-size: 0.82rem;
+      font-style: italic;
+    }}
+
+    /* ── Print styles ────────────────────────────────────────────────── */
+    /* ── Print page preset: 6mm L/R, 5mm T/B (Overll best fit for dashboard) ───────────────────── */
+    @page {{margin: 5mm 6mm;}}
+
+    @media print {{
+      /* Force browser to print backgrounds (colors, shadows) */
+      * {{
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }}
+
+      body {{
+        background: white !important;
+        padding: 0 !important;
+        margin: 0 !important;
+      }}
+
+      /* Hide the on-screen hint when printing */
+      .print-hint {{ display: none !important; }}
+
+      .wrapper {{
+        max-width: 100% !important;
+        padding: 0 !important;
+        margin: 0 !important;
+      }}
+
+      .report-header {{
+        margin-bottom: 1rem;
+        padding-top: 0.5rem;
+      }}
+
+      /* Keep each chart card on one page — never split mid-chart */
+      .chart-card {{
+        break-inside: avoid;
+        page-break-inside: avoid;
+        border: 1px solid #e2e8f0 !important;
+        box-shadow: none !important;
+        margin-bottom: 0.8rem;
+      }}
+
+      /* Keep KPI strip together */
+      .kpi-row {{
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }}
+
+      .kpi-card {{
+        box-shadow: none !important;
+        border: 1px solid #e2e8f0 !important;
+      }}
+
+      /* Plotly SVGs: fill the card width in print */
+      .chart-wrap svg.main-svg {{
+        width: 100% !important;
+        height: auto !important;
+      }}
+
+      hr {{ border-top: 1px solid #e2e8f0 !important; }}
+    }}
   </style>
 </head>
 <body>
@@ -230,6 +303,10 @@ def generate_html_report(charts, session_name, orientation="portrait",
     {kpi_html}
     <div class="grid">{chart_blocks}</div>
   </div>
+   <div class="print-hint">
+      &#128438; To save as PDF: <strong>Go to browser Setting/Ctrl+P &rarr; Print &rarr; Save as PDF.</strong>
+      &nbsp;&middot; Keep <strong>Background graphics</strong> enabled for best results.
+    </div>
   <script>
     function relayoutAll() {{
       if (typeof Plotly === 'undefined') return;
@@ -243,110 +320,9 @@ def generate_html_report(charts, session_name, orientation="portrait",
     }}
     window.addEventListener('load', function() {{ setTimeout(relayoutAll, 200); }});
     window.addEventListener('resize', function() {{ setTimeout(relayoutAll, 100); }});
+    window.addEventListener('beforeprint', function() {{ relayoutAll(); }});
   </script>
 </body>
 </html>"""
 
 
-# ── Playwright browser bootstrap ──────────────────────────────────────────────
-def _ensure_playwright_browsers() -> None:
-    """
-    Download the Chromium binary the first time PDF export is called.
-
-    --with-deps is intentionally OMITTED here.
-    On Streamlit Community Cloud the app runs as `appuser` (not root), so
-    apt-get (which --with-deps invokes) fails with a permission error.
-    System-level OS packages are instead declared in packages.txt and
-    installed during the build step (as root) before the app starts.
-
-    Locally the same applies: install system deps once via your OS package
-    manager; this function only handles the Playwright browser binary.
-    """
-    global _BROWSERS_READY
-    if _BROWSERS_READY:
-        return
-
-    # Prefer the `playwright` CLI that lives next to the active Python
-    # (i.e. inside the venv bin/).  shutil.which() searches PATH in order,
-    # so it finds the venv's binary when the venv is activated.
-    # Falling back to `sys.executable -m playwright` handles edge cases where
-    # PATH isn't set correctly (e.g. some CI environments).
-    import shutil
-    pw_cli = shutil.which("playwright")
-    cmd = (
-        [pw_cli, "install", "chromium"]
-        if pw_cli
-        else [sys.executable, "-m", "playwright", "install", "chromium"]
-    )
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"playwright install chromium failed:\n{result.stderr or result.stdout}"
-        )
-
-    _BROWSERS_READY = True
-
-
-# ── PDF Export — Playwright HTML → PDF ────────────────────────────────────────
-def generate_pdf_report(charts, session_name, orientation="portrait",
-                        kpis=None, dashboard_title="", grid_cols_n=2):
-    """
-    Convert the live dashboard to PDF via Playwright (headless Chromium).
-
-    Strategy
-    --------
-    1. Call generate_html_report() — the same path used by the HTML download
-       button, which already produces pixel-perfect, fully interactive output.
-    2. Load that HTML into a headless Chromium page.
-    3. Wait for Plotly to finish rendering every chart (networkidle + extra
-       settle time), then call page.pdf() with the browser's native print
-       engine.
-
-    Why this works on Streamlit Cloud
-    ----------------------------------
-    Kaleido spawns a sandboxed subprocess that the Cloud container blocks.
-    Playwright runs Chromium directly without a separate subprocess layer, so
-    the sandbox restriction does not apply.
-    """
-    _ensure_playwright_browsers()
-
-    is_landscape = orientation == "landscape"
-
-    # Build the same HTML the "Download HTML" button produces.
-    # Step 1 — build the self-contained HTML (Plotly JS embedded inline,
-    # no CDN calls needed from inside the headless browser).
-    html_content = generate_html_report(
-        charts, session_name,
-        orientation=orientation,
-        kpis=kpis,
-        dashboard_title=dashboard_title,
-        grid_cols_n=grid_cols_n,
-        inline_plotly=True,
-    )
-
-    # Step 2 — render HTML → full-page PNG screenshot via Playwright.
-    # full_page=True captures the entire document height in one shot —
-    # no pagination, no page.pdf() rendering quirks.
-    from playwright.sync_api import sync_playwright
-
-    vp_width = 1400 if is_landscape else 1200
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-        )
-        page = browser.new_page(viewport={"width": vp_width, "height": 900})
-        page.set_content(html_content, wait_until="networkidle", timeout=60_000)
-        page.wait_for_timeout(3_000)   # let Plotly finish all chart renders
-        png_bytes = page.screenshot(full_page=True)
-        browser.close()
-
-    # Step 3 — PNG → single-page PDF via Pillow.
-    # The PDF page is sized exactly to the image dimensions — one page, no margins.
-    import io
-    from PIL import Image
-
-    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
-    pdf_buffer = io.BytesIO()
-    img.save(pdf_buffer, format="PDF", resolution=150)
-    return pdf_buffer.getvalue()

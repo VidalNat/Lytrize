@@ -175,6 +175,142 @@ def _g(aid: str, key: str, default=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Scoped helpers -- per-chart-uid key prefix so multiple panels never collide
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _sk_uid(uid: str, aid: str, key: str) -> str:
+    """Namespaced key scoped to a specific chart uid for the regenerate panel."""
+    return f"_edit_{uid}_{aid}_{key}"
+
+
+def _g_uid(uid: str, aid: str, key: str, default=None):
+    return st.session_state.get(_sk_uid(uid, aid, key), default)
+
+
+def render_config_panel_scoped(uid: str, aid: str, df) -> None:
+    """
+    Same as render_config_panel() but every widget key is scoped to `uid` so
+    multiple charts can have independent regeneration panels without collision.
+    """
+    num, cat, dt, all_cols = _num_cols(), _cat_cols(), _dt_cols(), df.columns.tolist()
+    NONE = "None"
+    sk = lambda key: _sk_uid(uid, aid, key)   # noqa: E731
+
+    st.selectbox("🎨 Colour Palette", list(PALETTES.keys()), key=sk("palette"))
+    st.markdown("---")
+
+    if aid == "statistical":
+        c1, c2, c3 = st.columns(3)
+        with c1: st.multiselect("Group by (optional)", cat, max_selections=1, key=sk("x"))
+        with c2: st.multiselect("Metrics", num, default=num[:4], key=sk("y"))
+        with c3: st.selectbox("Aggregation", list(_AGG_FUNCS.keys()), key=sk("agg"))
+
+    elif aid == "distribution":
+        c1, c2 = st.columns(2)
+        with c1: st.multiselect("Numeric columns", num, default=num[:4], key=sk("x"))
+        with c2: st.multiselect("Colour by (optional)", cat, max_selections=1, key=sk("color"))
+
+    elif aid == "correlation":
+        c1, c2 = st.columns(2)
+        with c1: st.multiselect("Columns", num, default=num, key=sk("x"))
+        with c2: st.multiselect("Additional (optional)", num, key=sk("y"))
+
+    elif aid in ("categorical", "pie_chart"):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: st.multiselect("Dimension columns", cat, default=cat[:2], key=sk("x"))
+        with c2: st.multiselect("Metric columns (optional)", num, key=sk("y"))
+        with c3: st.selectbox("Aggregation", list(_AGG_FUNCS.keys()), key=sk("agg"))
+        with c4: st.selectbox("Sort", ["Value ↓","Value ↑","Category A→Z","Category Z→A"], key=sk("sort"))
+        st.markdown("---")
+        if aid == "categorical":
+            st.selectbox("📊 Chart Direction",
+                         ["Vertical (Column chart)", "Horizontal (Bar chart)"],
+                         key=sk("direction"))
+        st.markdown("**🔝 Top N Categories**")
+        st.caption("0 = show all categories")
+        st.number_input("Top N (0 = show all)", min_value=0, max_value=200,
+                        step=1, value=0, key=sk("top_n"))
+        if aid == "categorical":
+            st.markdown("---")
+            st.markdown("**📊 Dual Y-Axis (Secondary metric as line overlay)**")
+            dual_opts = [NONE] + list(num)
+            st.selectbox("Secondary Y-Axis metric", dual_opts, key=sk("dual_y"))
+
+    elif aid == "time_series":
+        dt_candidates = dt if dt else all_cols
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.multiselect("Date / Time column", dt_candidates,
+                           default=dt_candidates[:1] if dt_candidates else [],
+                           max_selections=1, key=sk("x"))
+        with c2: st.multiselect("Primary metric(s)", num, default=num[:2], key=sk("y"))
+        with c3: st.selectbox("Date grouping", list(_DATE_PARTS.keys()), key=sk("date_part"))
+        with c4: st.selectbox("Aggregation", list(_AGG_FUNCS.keys()), key=sk("agg"))
+        st.markdown("---")
+        dual_opts_ts = [NONE] + list(num)
+        st.selectbox("Secondary Y-Axis metric", dual_opts_ts, key=sk("dual_y_ts"))
+
+    elif aid == "outlier":
+        c1, c2 = st.columns(2)
+        with c1: st.multiselect("Columns to analyse", num, default=num[:4], key=sk("x"))
+        with c2: st.multiselect("Group by (optional)", cat, max_selections=1, key=sk("grp"))
+
+
+def _collect_kwargs_scoped(uid: str, aid: str, df) -> dict:
+    """Same as _collect_kwargs() but reads from uid-scoped widget keys."""
+    num, cat, dt, all_cols = _num_cols(), _cat_cols(), _dt_cols(), df.columns.tolist()
+    NONE = "None"
+    g = lambda key, default=None: _g_uid(uid, aid, key, default)   # noqa: E731
+    _sort_map = {
+        "Value ↓": "Value (Desc)", "Value ↑": "Value (Asc)",
+        "Category A→Z": "Category (A-Z)", "Category Z→A": "Category (Z-A)",
+    }
+
+    pal_label = g("palette", list(PALETTES.keys())[0])
+    kwargs = {"palette": PALETTES.get(pal_label, list(PALETTES.values())[0])}
+
+    if aid == "statistical":
+        kwargs.update(x_cols=g("x",[]) or None, y_cols=g("y",num[:4]) or num,
+                      agg=_AGG_FUNCS.get(g("agg","Mean (Avg)"), "mean"))
+    elif aid == "distribution":
+        color = g("color",[])
+        kwargs.update(x_cols=g("x",num[:4]) or num[:4], y_cols=color or None)
+    elif aid == "correlation":
+        kwargs.update(x_cols=g("x",num) or num, y_cols=g("y",[]) or None)
+    elif aid in ("categorical","pie_chart"):
+        x = g("x",cat[:2]) or cat[:2]
+        y = g("y",[]) or None
+        agg = _AGG_FUNCS.get(g("agg","Mean (Avg)"), "mean")
+        top_n_v = int(g("top_n",0) or 0)
+        top_n = top_n_v if top_n_v > 0 else None
+        sort_by = _sort_map.get(g("sort","Value ↓"), "Value (Desc)")
+        kwargs.update(x_cols=x, y_cols=y, agg=agg, sort_by=sort_by, top_n=top_n)
+        if aid == "categorical":
+            direction = g("direction","Vertical (Column chart)")
+            raw_dual = g("dual_y", NONE)
+            dual_y = None if (not raw_dual or raw_dual == NONE) else raw_dual
+            if dual_y and y and dual_y in (y if isinstance(y,list) else [y]):
+                dual_y = None
+            kwargs.update(direction=direction, dual_y_col=dual_y)
+    elif aid == "time_series":
+        x = g("x",[])
+        y = g("y",num[:2]) or num[:2]
+        agg = _AGG_FUNCS.get(g("agg","Mean (Avg)"), "mean")
+        date_part = _DATE_PARTS.get(g("date_part","None"))
+        raw_dual = g("dual_y_ts", NONE)
+        dual_y = None if (not raw_dual or raw_dual == NONE) else raw_dual
+        if dual_y and dual_y in (y if isinstance(y,list) else [y]):
+            dual_y = None
+        kwargs.update(x_cols=x or None, y_cols=y, agg=agg,
+                      date_part=date_part, dual_y_col=dual_y)
+    elif aid == "outlier":
+        g2 = g("grp",[])
+        kwargs.update(x_cols=g("x",num[:4]) or num[:4], y_cols=g2 or None)
+
+    return kwargs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Configuration panel -- widget rendering
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -50,7 +50,7 @@ from modules.database import (
     clear_draft, save_draft,
 )
 from modules.charts import charts_to_json, clean_insight_text, _fmt_num
-from modules.export import generate_html_report, generate_pdf_report
+from modules.export import generate_html_report
 from modules.ui.css import inject_footer, render_logo
 
 
@@ -753,13 +753,18 @@ def page_dashboard():
         eid    = st.session_state.editing_session_id
         loaded = get_session_charts(eid, st.session_state.get("user_id"))
         for uid, title, fig, desc, auto, ctype, meta in loaded:
-            # Only seed note if user hasn't already typed something this session
             note_key = f"desc_{uid}"
-            if note_key not in st.session_state and desc:
+            # Seed note if:
+            #   a) key doesn't exist yet, OR
+            #   b) key is empty string (analysis.py pre-seeds it as "" before
+            #      we get here, which previously blocked the saved value loading)
+            # Never overwrite if user has already typed something non-empty.
+            current_note = st.session_state.get(note_key, None)
+            if desc and (current_note is None or current_note == ""):
                 st.session_state[note_key] = desc
-            # Also restore chart meta (custom title, subtitle etc.) if not set
+            # Restore chart meta (custom title, subtitle etc.) if not set
             meta_key = f"chart_meta_{uid}"
-            if meta_key not in st.session_state and meta:
+            if meta and not st.session_state.get(meta_key):
                 st.session_state[meta_key] = meta
         st.session_state._edit_notes_loaded = True
 
@@ -860,14 +865,21 @@ def page_dashboard():
         inject_footer()
         return
 
-    # Resolve grid order
+    # Resolve grid order — deduplicate to prevent DuplicateWidgetID errors
+    # if the same uid somehow appears twice in grid_order (e.g. rapid clicks).
     uid_map   = {c[0]: c for c in charts}
     go_order  = st.session_state.get("grid_order", [c[0] for c in charts])
-    ordered   = [uid_map[u] for u in go_order if u in uid_map]
-    # Append unplaced
-    placed    = {c[0] for c in ordered}
+    seen_uids: set = set()
+    ordered   = []
+    for u in go_order:
+        if u in uid_map and u not in seen_uids:
+            ordered.append(uid_map[u])
+            seen_uids.add(u)
+    # Append unplaced charts not in grid_order at all
     for c in charts:
-        if c[0] not in placed: ordered.append(c)
+        if c[0] not in seen_uids:
+            ordered.append(c)
+            seen_uids.add(c[0])
 
     # ── Export ────────────────────────────────────────────────────────────────
     if ordered:
@@ -881,7 +893,18 @@ def page_dashboard():
         st.markdown("---")
 
     st.markdown("### 📈 Dashboard")
-    _render_grid(ordered, viewing_saved)
+    try:
+        _render_grid(ordered, viewing_saved)
+    except Exception as _render_err:
+        err_msg = str(_render_err)
+        if "DuplicateWidgetID" in err_msg or "duplicate" in err_msg.lower():
+            st.warning(
+                "⚠️ A chart appears more than once in the layout. "
+                "Open **Arrange Dashboard Layout** above and make sure each "
+                "chart is assigned to only one slot, then click **Apply Layout**.",
+                icon=None)
+        else:
+            st.error(f"Dashboard render error: {err_msg}")
     inject_footer()
 
 
@@ -903,32 +926,18 @@ def _export_row(charts, sname, viewing_saved):
         export_charts.append((uid, item[1], fig, notes, item[4] if len(item)>4 else [],
                               item[5] if len(item)>5 else "", meta))
 
-    e1, e2, _ = st.columns([2,2,4])
     safe_file = re.sub(r"[^A-Za-z0-9_.-]+", "_", dash_title).strip("._") or "lytrize_report"
-    with e1:
-        html = generate_html_report(export_charts, sname,
-                                    orientation=orient, kpis=kpis,
-                                    dashboard_title=dash_title,
-                                    grid_cols_n=st.session_state.get("grid_cols_n", 2))
-        st.download_button("🌐 Download HTML", html,
+    html = generate_html_report(export_charts, sname,
+                                orientation=orient, kpis=kpis,
+                                dashboard_title=dash_title,
+                                grid_cols_n=st.session_state.get("grid_cols_n", 2))
+    c1, c2 = st.columns([2, 5])
+    with c1:
+        st.download_button("⬇️ Download HTML", html,
                            file_name=f"{safe_file}.html",
                            mime="text/html", use_container_width=True)
-    with e2:
-        pk = f"pdf_{sname}"
-        if st.button("📄 Generate PDF", key="gen_pdf", use_container_width=True):
-            with st.spinner("Preparing PDF engine …"):
-                try:
-                    st.session_state[pk] = generate_pdf_report(
-                        export_charts, sname, orientation=orient,
-                        kpis=kpis, dashboard_title=dash_title,
-                        grid_cols_n=st.session_state.get("grid_cols_n", 2))
-                except Exception as e:
-                    st.error(f"PDF error: {e}")
-        if pk in st.session_state:
-            st.download_button("⬇️ Download PDF", st.session_state[pk],
-                               file_name=f"{safe_file}.pdf",
-                               mime="application/pdf",
-                               use_container_width=True, key="dl_pdf")
+    with c2:
+        st.info("💡 To save as PDF: open the downloaded HTML in your browser → **Use Print option or Ctrl+P** → **Save as PDF** (set margins to **None** & enable **Background Graphics** for best results)", icon=None)
 
 
 def _do_save(sname_in, charts, df):
@@ -946,10 +955,16 @@ def _do_save(sname_in, charts, df):
     st.session_state.pop("editing_session_id",    None)
     st.session_state.pop("editing_session_name",  None)
     st.session_state.pop("_edit_notes_loaded",    None)
+    st.session_state.pop("_analysis_notes_loaded", None)
     st.success(f"✅ Saved as '{sname_in}'!")
 
 
 def _do_update(sname_in, charts, clear_editing=True):
+    # Clear the notes-loaded flag so the next dashboard visit re-seeds desc_
+    # keys from the DB values we are about to write. This ensures notes are
+    # always in sync with what was actually saved.
+    st.session_state.pop("_edit_notes_loaded",      None)
+    st.session_state.pop("_analysis_notes_loaded",  None)
     eid = st.session_state.editing_session_id
     update_session_db(
         eid, sname_in,
