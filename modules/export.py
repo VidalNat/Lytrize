@@ -314,9 +314,8 @@ def generate_pdf_report(charts, session_name, orientation="portrait",
     is_landscape = orientation == "landscape"
 
     # Build the same HTML the "Download HTML" button produces.
-    # inline_plotly=True embeds Plotly JS directly into the HTML so the
-    # headless Chromium browser doesn't need to fetch cdn.plot.ly — which
-    # is blocked inside Streamlit Cloud containers.
+    # Step 1 — build the self-contained HTML (Plotly JS embedded inline,
+    # no CDN calls needed from inside the headless browser).
     html_content = generate_html_report(
         charts, session_name,
         orientation=orientation,
@@ -326,72 +325,28 @@ def generate_pdf_report(charts, session_name, orientation="portrait",
         inline_plotly=True,
     )
 
-    # Inject print CSS — disable ALL page breaks so the entire dashboard
-    # renders as one continuous surface with no pagination.
-    print_css = """
-    <style>
-      @media print {
-        body { background: white !important; margin: 0 !important; padding: 1rem !important; }
-        * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-        * { break-inside: avoid !important; page-break-inside: avoid !important;
-            break-before: avoid !important; break-after: avoid !important; }
-      }
-    </style>
-    """
-    html_content = html_content.replace("</head>", print_css + "</head>", 1)
-
+    # Step 2 — render HTML → full-page PNG screenshot via Playwright.
+    # full_page=True captures the entire document height in one shot —
+    # no pagination, no page.pdf() rendering quirks.
     from playwright.sync_api import sync_playwright
 
+    vp_width = 1400 if is_landscape else 1200
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-            ]
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
         )
-        # Use a tall viewport so Plotly lays out charts at full size
-        # before we measure the true rendered height.
-        vp_width = 1400 if is_landscape else 1100
-        page = browser.new_page(viewport={"width": vp_width, "height": 5000})
-
-        # Step 1 — networkidle: JS is parsed, initial layout pass done.
+        page = browser.new_page(viewport={"width": vp_width, "height": 900})
         page.set_content(html_content, wait_until="networkidle", timeout=60_000)
-
-        # Step 2 — wait until EVERY Plotly chart has produced its <svg>.
-        # This is the key fix: a fixed sleep misses slow-rendering charts;
-        # polling the DOM catches them all regardless of count or complexity.
-        page.wait_for_function(
-            """() => {
-                const plots = document.querySelectorAll('.js-plotly-plot');
-                if (plots.length === 0) return true;
-                return Array.from(plots).every(
-                    p => p.querySelector('svg.main-svg') !== null
-                );
-            }""",
-            timeout=30_000,
-        )
-
-        # Step 3 — scroll to bottom so any deferred/lazy layout is triggered,
-        # then give Plotly's relayoutAll a moment to finish resizing.
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        page.wait_for_timeout(1_500)
-
-        # Step 4 — measure the true rendered height of the whole document.
-        # We use this to create a single-page PDF sized to fit all content
-        # exactly — no blank first page, no overflow pages.
-        dims = page.evaluate("""() => ({
-            width:  document.documentElement.scrollWidth,
-            height: document.documentElement.scrollHeight
-        })""")
-
-        pdf_bytes = page.pdf(
-            # Custom page size = entire content on one sheet.
-            width=f"{dims['width']}px",
-            height=f"{dims['height'] + 32}px",  # +32px bottom breathing room
-            print_background=True,
-            margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
-        )
+        page.wait_for_timeout(3_000)   # let Plotly finish all chart renders
+        png_bytes = page.screenshot(full_page=True)
         browser.close()
 
-    return bytes(pdf_bytes)
+    # Step 3 — PNG → single-page PDF via Pillow.
+    # The PDF page is sized exactly to the image dimensions — one page, no margins.
+    import io
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    pdf_buffer = io.BytesIO()
+    img.save(pdf_buffer, format="PDF", resolution=150)
+    return pdf_buffer.getvalue()

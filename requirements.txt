@@ -3,5 +3,6 @@ pandas
 plotly
 openpyxl
 playwright
+Pillow
 # PostgreSQL support (optional — only needed when DATABASE_URL is set):
 # psycopg2-binary
