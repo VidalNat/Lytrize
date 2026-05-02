@@ -248,27 +248,39 @@ def generate_html_report(charts, session_name, orientation="portrait",
 # ── Playwright browser bootstrap ──────────────────────────────────────────────
 def _ensure_playwright_browsers() -> None:
     """
-    Install Chromium + its OS dependencies the first time PDF export is called.
+    Download the Chromium binary the first time PDF export is called.
 
-    On Streamlit Community Cloud the container starts fresh on each deploy, so
-    the browser binary is never present.  Running `playwright install chromium
-    --with-deps` inside the app process is the recommended cloud-safe approach.
-    The result is cached in the module-level flag so it only runs once per
-    Streamlit worker process.
+    --with-deps is intentionally OMITTED here.
+    On Streamlit Community Cloud the app runs as `appuser` (not root), so
+    apt-get (which --with-deps invokes) fails with a permission error.
+    System-level OS packages are instead declared in packages.txt and
+    installed during the build step (as root) before the app starts.
+
+    Locally the same applies: install system deps once via your OS package
+    manager; this function only handles the Playwright browser binary.
     """
     global _BROWSERS_READY
     if _BROWSERS_READY:
         return
 
-    result = subprocess.run(
-        [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
-        capture_output=True,
-        text=True,
+    # Prefer the `playwright` CLI that lives next to the active Python
+    # (i.e. inside the venv bin/).  shutil.which() searches PATH in order,
+    # so it finds the venv's binary when the venv is activated.
+    # Falling back to `sys.executable -m playwright` handles edge cases where
+    # PATH isn't set correctly (e.g. some CI environments).
+    import shutil
+    pw_cli = shutil.which("playwright")
+    cmd = (
+        [pw_cli, "install", "chromium"]
+        if pw_cli
+        else [sys.executable, "-m", "playwright", "install", "chromium"]
     )
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        # Non-fatal: let Playwright raise a clearer error when the browser is
-        # actually launched, rather than obscuring it here.
-        pass
+        raise RuntimeError(
+            f"playwright install chromium failed:\n{result.stderr or result.stdout}"
+        )
 
     _BROWSERS_READY = True
 
@@ -307,14 +319,15 @@ def generate_pdf_report(charts, session_name, orientation="portrait",
         grid_cols_n=grid_cols_n,
     )
 
-    # Add a @media print block so chart cards don't break across pages and
-    # backgrounds (gradient headers, KPI cards) are preserved.
+    # Inject print CSS — disable ALL page breaks so the entire dashboard
+    # renders as one continuous surface with no pagination.
     print_css = """
     <style>
       @media print {
-        body { background: white !important; padding: 0.5rem !important; }
-        .chart-card { break-inside: avoid; page-break-inside: avoid; }
-        .kpi-card   { break-inside: avoid; }
+        body { background: white !important; margin: 0 !important; padding: 1rem !important; }
+        * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        * { break-inside: avoid !important; page-break-inside: avoid !important;
+            break-before: avoid !important; break-after: avoid !important; }
       }
     </style>
     """
@@ -330,27 +343,31 @@ def generate_pdf_report(charts, session_name, orientation="portrait",
                 "--disable-gpu",
             ]
         )
-        # Viewport width matches the max-width used by generate_html_report
+        # Use a tall viewport so Plotly lays out charts at full size
+        # before we measure the true rendered height.
         vp_width = 1400 if is_landscape else 1100
-        page = browser.new_page(viewport={"width": vp_width, "height": 900})
+        page = browser.new_page(viewport={"width": vp_width, "height": 1100})
 
-        # set_content + networkidle waits for Plotly CDN JS to download and
-        # for the initial chart render to complete.
+        # networkidle waits for Plotly CDN + initial render.
         page.set_content(html_content, wait_until="networkidle", timeout=60_000)
 
-        # Extra settle: Plotly's relayoutAll runs at +200 ms after load.
+        # Extra settle for Plotly's deferred relayoutAll (+200 ms after load).
         page.wait_for_timeout(2_500)
 
+        # Measure the true rendered height of the whole document.
+        # We use this to create a single-page PDF sized to fit all content
+        # exactly — no blank first page, no overflow pages.
+        dims = page.evaluate("""() => ({
+            width:  document.documentElement.scrollWidth,
+            height: document.documentElement.scrollHeight
+        })""")
+
         pdf_bytes = page.pdf(
-            format="A4",
-            landscape=is_landscape,
+            # Custom page size = entire content on one sheet.
+            width=f"{dims['width']}px",
+            height=f"{dims['height'] + 32}px",  # +32px bottom breathing room
             print_background=True,
-            margin={
-                "top":    "10mm",
-                "bottom": "10mm",
-                "left":   "8mm",
-                "right":  "8mm",
-            },
+            margin={"top": "0", "bottom": "0", "left": "0", "right": "0"},
         )
         browser.close()
 
