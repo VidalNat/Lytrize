@@ -152,6 +152,11 @@ def page_home():
                     st.session_state.setdefault("file_name", fname)
                     # Clear any old view state
                     st.session_state.pop("view_session_id", None)
+                    # Always clear this flag so dashboard re-loads notes fresh
+                    # for the newly opened session (guards against stale flag
+                    # from a previously edited session in the same browser tab).
+                    st.session_state.pop("_edit_notes_loaded",      None)
+                    st.session_state.pop("_analysis_notes_loaded",  None)
                     log_activity(st.session_state.user_id, "session_edit_started",
                                  f"session_id={sid}", sid)
                     st.session_state.page = "analysis"; st.rerun()

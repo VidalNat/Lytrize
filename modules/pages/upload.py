@@ -19,13 +19,12 @@ CONTRIBUTING -- to add a new file type:
     Add a branch after the `is_excel()` check in page_upload().
     Read the file into a pandas DataFrame and write it to st.session_state.df.
     Then call _show_analysis_pipeline(df, filename) to continue the normal flow.
-"""
-"""
-modules/pages/upload.py
-File upload & pre-processing page.
+
 Fixes:
   - Lytrize logo at top (#10)
   - Preserves editing_session_id when re-uploading in edit mode (#8)
+  - _clear_excel_state() now correctly clears all _xl_sheets_ keys when
+    switching away from Excel (not new_file_name guard added).
 """
 
 import streamlit as st
