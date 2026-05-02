@@ -2,7 +2,6 @@ streamlit
 pandas
 plotly
 openpyxl
-kaleido
-fpdf2
+playwright
 # PostgreSQL support (optional — only needed when DATABASE_URL is set):
 # psycopg2-binary

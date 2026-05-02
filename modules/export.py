@@ -1,40 +1,43 @@
 """
-modules/export.py - PDF export engine.
-========================================
+modules/export.py - HTML & PDF export engine.
+==============================================
 
-Generates a single-page PDF report from the active dashboard charts.
+Exports the active dashboard as either a standalone HTML file or a PDF.
 
-Architecture:
-    - Uses the fpdf2 library (not reportlab) for PDF generation.
-    - Page height is computed dynamically before the PDF is created so all
-      charts fit on ONE page without overflow. auto_page_break is disabled.
-    - Each chart is rasterised to PNG via Plotly kaleido renderer, then
-      embedded into the PDF as an image.
-    - Insight text is wrapped and rendered below each chart.
-    - A fixed header (title, file name, date) and footer (page number) are
-      added after all chart content.
+PDF Architecture (Playwright-based):
+    - generate_html_report() builds a self-contained HTML page with embedded
+      Plotly charts (interactive JS, full fidelity).
+    - generate_pdf_report() feeds that HTML to a headless Chromium browser
+      via Playwright, waits for all charts to finish rendering, then prints
+      the page to PDF using the browser's native print engine.
+    - This approach is cloud-safe: no Kaleido process, no X11, no system
+      font dependencies. Works on Streamlit Community Cloud out of the box.
 
-Bug fix applied:
-    set_auto_page_break(auto=False): previously True, which caused fpdf to
-    insert blank overflow pages even though PAGE_H was pre-calculated to
-    fit all content exactly.
+Why not Kaleido?
+    Kaleido spawns a sandboxed subprocess which is blocked on Streamlit Cloud
+    (and many other PaaS hosts). Charts silently fail → "[Chart unavailable]".
 
-CONTRIBUTING - to change the layout:
-    Adjust MARGIN, CHART_H, TEXT_LINE_H constants near the top of the file.
-    PAGE_W is fixed at A4 width; PAGE_H grows to fit content.
+Why not WeasyPrint?
+    WeasyPrint does not execute JavaScript, so Plotly charts never render.
+
+CONTRIBUTING:
+    To change PDF page size / margins, adjust the `page.pdf(...)` call at
+    the bottom of generate_pdf_report().
+    To change the visual layout, edit generate_html_report().
 """
 
-import os
 import re
 import copy
-import json
-import math
 import datetime
+import subprocess
+import sys
 import tempfile
-import plotly.io as pio
-from fpdf import FPDF
+import os
 from html import escape
 from modules.charts import clean_insight_text
+
+# ── one-time browser-install flag ─────────────────────────────────────────────
+_BROWSERS_READY = False
 
 
 # ── Emoji / encoding helpers ──────────────────────────────────────────────────
@@ -242,267 +245,113 @@ def generate_html_report(charts, session_name, orientation="portrait",
 </html>"""
 
 
-# ── PDF Export -- single-page dashboard layout ─────────────────────────────────
+# ── Playwright browser bootstrap ──────────────────────────────────────────────
+def _ensure_playwright_browsers() -> None:
+    """
+    Install Chromium + its OS dependencies the first time PDF export is called.
+
+    On Streamlit Community Cloud the container starts fresh on each deploy, so
+    the browser binary is never present.  Running `playwright install chromium
+    --with-deps` inside the app process is the recommended cloud-safe approach.
+    The result is cached in the module-level flag so it only runs once per
+    Streamlit worker process.
+    """
+    global _BROWSERS_READY
+    if _BROWSERS_READY:
+        return
+
+    result = subprocess.run(
+        [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        # Non-fatal: let Playwright raise a clearer error when the browser is
+        # actually launched, rather than obscuring it here.
+        pass
+
+    _BROWSERS_READY = True
+
+
+# ── PDF Export — Playwright HTML → PDF ────────────────────────────────────────
 def generate_pdf_report(charts, session_name, orientation="portrait",
                         kpis=None, dashboard_title="", grid_cols_n=2):
     """
-    Renders all charts on one or more pages in a grid matching grid_cols_n.
-    Page breaks automatically when content overflows.
+    Convert the live dashboard to PDF via Playwright (headless Chromium).
+
+    Strategy
+    --------
+    1. Call generate_html_report() — the same path used by the HTML download
+       button, which already produces pixel-perfect, fully interactive output.
+    2. Load that HTML into a headless Chromium page.
+    3. Wait for Plotly to finish rendering every chart (networkidle + extra
+       settle time), then call page.pdf() with the browser's native print
+       engine.
+
+    Why this works on Streamlit Cloud
+    ----------------------------------
+    Kaleido spawns a sandboxed subprocess that the Cloud container blocks.
+    Playwright runs Chromium directly without a separate subprocess layer, so
+    the sandbox restriction does not apply.
     """
-    title        = dashboard_title or session_name
+    _ensure_playwright_browsers()
+
     is_landscape = orientation == "landscape"
 
-    # ── Page geometry ─────────────────────────────────────────────────────────
-    PAGE_W   = 297.0 if is_landscape else 210.0
-    PAGE_H_A = 210.0 if is_landscape else 297.0   # standard A4 height
-    MARGIN   = 14.0
-    COL_GAP  = 6.0
-    EFF_W    = PAGE_W - 2 * MARGIN
-    # For portrait always use 1 col; for landscape use the grid setting
-    N_COLS   = grid_cols_n if is_landscape else 1
-    COL_W    = (EFF_W - COL_GAP * (N_COLS - 1)) / N_COLS
-    CHART_H  = round(COL_W * 9 / 16, 1)   # 16:9 aspect per chart image
+    # Build the same HTML the "Download HTML" button produces.
+    html_content = generate_html_report(
+        charts, session_name,
+        orientation=orientation,
+        kpis=kpis,
+        dashboard_title=dashboard_title,
+        grid_cols_n=grid_cols_n,
+    )
 
-    n_charts = len(charts)
-    n_rows   = math.ceil(n_charts / N_COLS) if n_charts > 0 else 1
+    # Add a @media print block so chart cards don't break across pages and
+    # backgrounds (gradient headers, KPI cards) are preserved.
+    print_css = """
+    <style>
+      @media print {
+        body { background: white !important; padding: 0.5rem !important; }
+        .chart-card { break-inside: avoid; page-break-inside: avoid; }
+        .kpi-card   { break-inside: avoid; }
+      }
+    </style>
+    """
+    html_content = html_content.replace("</head>", print_css + "</head>", 1)
 
-    TITLE_H      = 8.0   # chart title text + optional subtitle
-    NOTE_H       = 5.0   # notes line below image
-    INSIGHT_H    = 13.0  # up to 3 auto-insight lines
-    ROW_CONTENT  = TITLE_H + CHART_H + NOTE_H + INSIGHT_H
-    ROW_GAP      = 10.0
-    ROW_H        = ROW_CONTENT + ROW_GAP
+    from playwright.sync_api import sync_playwright
 
-    HEADER_H     = 24.0
-    KPI_H        = 32.0 if kpis else 0
-    FOOTER_H     = 12.0
-    # Add 20mm buffer so last row never clips against footer
-    content_h = MARGIN + HEADER_H + KPI_H + n_rows * ROW_H + FOOTER_H + MARGIN + 20.0
-    PAGE_H    = max(PAGE_H_A, content_h)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ]
+        )
+        # Viewport width matches the max-width used by generate_html_report
+        vp_width = 1400 if is_landscape else 1100
+        page = browser.new_page(viewport={"width": vp_width, "height": 900})
 
-    # ── Render chart PNGs ─────────────────────────────────────────────────────
-    PX_W = int(COL_W * 5)
-    PX_H = int(CHART_H * 5)
-    chart_imgs = []
-    for item in charts:
-        uid, chart_title, fig, notes = item[:4]
-        meta = item[6] if len(item) > 6 else {}
-        fig_copy = copy.deepcopy(fig)
-        xl = meta.get("x_label", ""); yl = meta.get("y_label", "")
-        if xl: fig_copy.update_xaxes(title_text=xl)
-        if yl: fig_copy.update_yaxes(title_text=yl)
-        disp = meta.get("custom_title") or chart_title
-        # Remove chart title from image -- drawn as text above in PDF
-        fig_copy.update_layout(title_text="")
-        is_horiz = any(getattr(t, "orientation", "v") == "h"
-                       for t in fig_copy.data if hasattr(t, "orientation"))
-        if is_horiz:
-            fig_copy.update_yaxes(tickfont=dict(size=9), automargin=True)
-            fig_copy.update_xaxes(tickfont=dict(size=9))
-            fig_copy.update_layout(margin=dict(l=120, r=16, t=10, b=16))
-        else:
-            fig_copy.update_xaxes(tickangle=-35, tickfont=dict(size=9), automargin=True)
-            fig_copy.update_yaxes(tickfont=dict(size=9), automargin=True)
-            fig_copy.update_layout(margin=dict(l=16, r=16, t=10, b=64))
-        fig_copy.update_layout(paper_bgcolor="white", plot_bgcolor="white")
-        try:
-            raw = pio.to_image(fig_copy, format="png",
-                               width=PX_W, height=PX_H, scale=2)
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-            tmp.write(bytes(raw)); tmp.close()
-            chart_imgs.append({
-                "path":     tmp.name,
-                "title":    disp,
-                "subtitle": meta.get("subtitle", ""),
-                "notes":    str(notes).strip() if notes else "",
-                "insights": item[4] if len(item) > 4 else [],
-                "meta":     meta,
-                "full_w":   meta.get("full_width", False),
-            })
-        except Exception as e:
-            chart_imgs.append({"path": None, "title": chart_title,
-                               "subtitle": "", "notes": f"[render error: {e}]",
-                               "insights": [], "meta": meta, "full_w": False})
+        # set_content + networkidle waits for Plotly CDN JS to download and
+        # for the initial chart render to complete.
+        page.set_content(html_content, wait_until="networkidle", timeout=60_000)
 
-    # ── Build PDF ─────────────────────────────────────────────────────────────
-    pdf = FPDF(orientation="L" if is_landscape else "P",
-               unit="mm", format=(PAGE_W, PAGE_H))
-    pdf.set_margins(MARGIN, MARGIN, MARGIN)
-    # auto_page_break as safety net -- if content somehow exceeds PAGE_H it won't clip
-    pdf.set_auto_page_break(auto=False)  # FIX: PAGE_H is pre-calculated; True caused blank overflow pages.
-    pdf.add_page()
+        # Extra settle: Plotly's relayoutAll runs at +200 ms after load.
+        page.wait_for_timeout(2_500)
 
-    y = MARGIN  # current Y cursor
+        pdf_bytes = page.pdf(
+            format="A4",
+            landscape=is_landscape,
+            print_background=True,
+            margin={
+                "top":    "10mm",
+                "bottom": "10mm",
+                "left":   "8mm",
+                "right":  "8mm",
+            },
+        )
+        browser.close()
 
-    # ── Header ────────────────────────────────────────────────────────────────
-    pdf.set_xy(MARGIN, y)
-    pdf.set_font("helvetica", "B", 16)
-    pdf.set_text_color(79, 110, 247)
-    pdf.cell(EFF_W, 8, _clean_pdf(title), align="C",
-             new_x="LMARGIN", new_y="NEXT")
-    y += 9
-
-    pdf.set_xy(MARGIN, y)
-    pdf.set_font("helvetica", "", 7)
-    pdf.set_text_color(100, 116, 139)
-    sub = _clean_pdf(
-        f"Generated by Lytrize  \u00b7  "
-        f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    pdf.cell(EFF_W, 4, sub, align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_text_color(0, 0, 0)
-    y += 6
-
-    pdf.set_draw_color(226, 232, 240)
-    pdf.line(MARGIN, y, MARGIN + EFF_W, y)
-    y += 5
-
-    # ── KPI row ───────────────────────────────────────────────────────────────
-    if kpis:
-        n_kpi = len(kpis)
-        kpi_w = min(44.0, EFF_W / n_kpi)
-        kpi_x0 = MARGIN + (EFF_W - kpi_w * n_kpi) / 2
-        BOX_H = 18.0
-
-        for ki, k in enumerate(kpis):
-            kx = kpi_x0 + ki * kpi_w
-            # Card background
-            pdf.set_fill_color(240, 244, 255)
-            pdf.set_draw_color(200, 210, 250)
-            pdf.rect(kx, y, kpi_w - 2, BOX_H, style="FD")
-
-            # Icon
-            pdf.set_xy(kx, y + 1.5)
-            pdf.set_font("helvetica", "", 8)
-            pdf.set_text_color(100, 116, 139)
-            pdf.cell(kpi_w - 2, 4, _clean_pdf(k.get("icon", "")), align="C")
-
-            # Value
-            pdf.set_xy(kx, y + 6)
-            pdf.set_font("helvetica", "B", 9)
-            change = k.get("change_pct")
-            if change is not None:
-                color = (16, 185, 129) if change >= 0 else (239, 68, 68)
-            else:
-                color = (79, 110, 247)
-            pdf.set_text_color(*color)
-            val_str = _clean_pdf(
-                f'{k.get("prefix","")}{k.get("value","")}{k.get("suffix","")}')
-            pdf.cell(kpi_w - 2, 5, val_str, align="C")
-
-            # Label
-            pdf.set_xy(kx, y + 12)
-            pdf.set_font("helvetica", "", 5.5)
-            pdf.set_text_color(100, 116, 139)
-            pdf.cell(kpi_w - 2, 3.5, _clean_pdf(k.get("label", "")), align="C")
-
-        pdf.set_text_color(0, 0, 0)
-        y += BOX_H + 4
-        pdf.set_draw_color(226, 232, 240)
-        pdf.line(MARGIN, y, MARGIN + EFF_W, y)
-        y += 5
-
-    # ── Charts ────────────────────────────────────────────────────────────────
-    x_positions = [MARGIN + i * (COL_W + COL_GAP) for i in range(N_COLS)]
-
-    for row_i in range(n_rows):
-        start_i = row_i * N_COLS
-        indices  = list(range(start_i, min(start_i + N_COLS, len(chart_imgs))))
-
-        row_y = y
-
-        for slot, ci in enumerate(indices):
-            info  = chart_imgs[ci]
-            is_fw = info["full_w"]
-            xpos  = x_positions[slot]
-            cw    = EFF_W if is_fw else COL_W
-
-            # Chart title
-            pdf.set_xy(xpos, row_y)
-            pdf.set_font("helvetica", "B", 8)
-            pdf.set_text_color(30, 41, 59)
-            # Clip long titles to one line
-            t_clip = _clean_pdf(info["title"])[:72]
-            pdf.cell(cw, 5, t_clip, align="L")
-
-            sub_offset = 0
-            if info["subtitle"]:
-                pdf.set_xy(xpos, row_y + 5)
-                pdf.set_font("helvetica", "I", 6)
-                pdf.set_text_color(100, 116, 139)
-                pdf.cell(cw, 3.5, _clean_pdf(info["subtitle"]), align="L")
-                sub_offset = 3.5
-
-            img_y = row_y + 5 + sub_offset + 1
-
-            if info["path"]:
-                pdf.image(info["path"], x=xpos, y=img_y,
-                          w=EFF_W if is_fw else COL_W, h=CHART_H)
-                try:
-                    os.remove(info["path"])
-                except Exception:
-                    pass
-            else:
-                pdf.set_fill_color(248, 250, 252)
-                pdf.rect(xpos, img_y, cw, CHART_H, style="F")
-                pdf.set_xy(xpos, img_y + CHART_H / 2 - 3)
-                pdf.set_font("helvetica", "I", 7)
-                pdf.set_text_color(148, 163, 184)
-                pdf.cell(cw, 5, "[Chart unavailable]", align="C")
-
-            # Auto-insights directly below chart image
-            pdf.set_text_color(0, 0, 0)
-            after_img_y = img_y + CHART_H + 1
-            insights = info.get("insights", [])
-            meta_i   = info.get("meta", {})
-            ins_end_y = after_img_y
-            if insights and meta_i.get("show_auto_insights", True):
-                hidden  = set(meta_i.get("hidden_insights", []))
-                visible = [ins for i, ins in enumerate(insights) if i not in hidden]
-                if visible:
-                    ins_y = after_img_y
-                    pdf.set_font("helvetica", "", 5.5)
-                    pdf.set_text_color(79, 110, 247)
-                    max_chars_ins = int(cw / 1.55)
-                    for ins in visible[:3]:   # cap at 3 lines
-                        txt = _clean_pdf(clean_insight_text(ins))
-                        if len(txt) > max_chars_ins:
-                            txt = txt[:max_chars_ins - 1] + "..."
-                        pdf.set_xy(xpos, ins_y)
-                        pdf.cell(cw, 4.0, f"- {txt}", align="L")
-                        ins_y += 4.0
-                    ins_end_y = ins_y
-
-            # Notes below insights
-            notes_str = info.get("notes", "")
-            if notes_str and info["path"]:
-                note_y = ins_end_y + 0.5
-                pdf.set_xy(xpos, note_y)
-                pdf.set_font("helvetica", "I", 6)
-                pdf.set_text_color(130, 80, 200)
-                label = "Notes: "
-                full  = _clean_pdf(f"{label}{notes_str}")
-                max_chars = int(cw / 1.8)
-                if len(full) > max_chars:
-                    full = full[:max_chars - 1] + "..."
-                pdf.cell(cw, 3.5, full, align="L")
-
-            pdf.set_text_color(0, 0, 0)
-
-            if is_fw:
-                break  # full-width chart occupies entire row
-
-        y += ROW_H
-
-    # ── Footer ────────────────────────────────────────────────────────────────
-    # Anchor to bottom of page rather than using the accumulated y cursor,
-    # so it always appears regardless of how much content was rendered above.
-    footer_y = PAGE_H - MARGIN - 6
-    pdf.set_xy(MARGIN, footer_y)
-    pdf.set_draw_color(226, 232, 240)
-    pdf.line(MARGIN, footer_y, MARGIN + EFF_W, footer_y)
-    pdf.set_xy(MARGIN, footer_y + 2)
-    pdf.set_font("helvetica", "", 6)
-    pdf.set_text_color(148, 163, 184)
-    pdf.cell(EFF_W, 4, _clean_pdf(f"Lytrize  \u00b7  {title}"), align="C")
-
-    return bytes(pdf.output())
+    return bytes(pdf_bytes)
