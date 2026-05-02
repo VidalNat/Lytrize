@@ -218,25 +218,56 @@ def _kpi_card_html(kpi):
     prefix = escape(str(kpi.get("prefix", "")))
     suffix = escape(str(kpi.get("suffix", "")))
     label  = escape(str(kpi.get("label", "")))
-    # Long values (date ranges etc.) need wrapping -- drop nowrap for those
-    full_val = f"{prefix}{value}{suffix}"
-    val_style = (
+
+    # K / M / B unit badge
+    # _fmt_num() produces strings like "1.2K", "3.4M", "2.1B".
+    # We split the numeric part from the unit and render the unit as a small
+    # styled badge so the scale is immediately readable at a glance.
+    # Values without a K/M/B suffix (e.g. "42", "8.3%", date ranges) pass through unchanged.
+    _UNIT_META = {
+        "B": ("B", "Billions",  "#8b5cf6"),
+        "M": ("M", "Millions",  "#4f6ef7"),
+        "K": ("K", "Thousands", "#06b6d4"),
+    }
+    unit_html = ""
+    num_part  = value
+    for unit, (badge_label, title, color) in _UNIT_META.items():
+        if (value.endswith(unit) and len(value) > 1
+                and value[:-1].replace(".", "").replace("-", "").isdigit()):
+            num_part  = value[:-1]
+            unit_html = (
+                f'<span title="{title}" style="' 
+                f'display:inline-block;margin-left:4px;' 
+                f'font-size:0.72rem;font-weight:700;' 
+                f'background:{color}22;color:{color};' 
+                f'border:1px solid {color}55;' 
+                f'border-radius:5px;padding:1px 5px;' 
+                f'vertical-align:middle;letter-spacing:0.04em;' 
+                f'">{badge_label}</span>'
+            )
+            break
+
+    full_val    = f"{prefix}{value}{suffix}"
+    is_long     = len(full_val) > 14
+    val_style   = (
         "font-size:0.95rem;font-weight:800;color:#4f6ef7;line-height:1.25;"
         "margin-top:4px;word-break:break-word;overflow-wrap:anywhere;"
-    ) if len(full_val) > 14 else (
+    ) if is_long else (
         "font-size:1.15rem;font-weight:800;color:#4f6ef7;line-height:1.2;"
         "margin-top:4px;white-space:nowrap;"
     )
+    val_display = f"{prefix}{num_part}{unit_html}{suffix}"
+
     return (
-        f'<div style="background:rgba(79,110,247,0.07);border:1px solid rgba(79,110,247,0.18);'
-        f'border-radius:12px;padding:0.7rem 0.9rem;text-align:center;'
-        f'width:100%;box-shadow:0 2px 8px rgba(0,0,0,0.06);flex:1;">'
-        f'<div style="font-size:1.2rem;line-height:1">{icon}</div>'
-        f'<div style="{val_style}">{full_val}</div>'
-        f'{arrow_html}'
-        f'<div style="font-size:0.63rem;opacity:0.6;text-transform:uppercase;'
-        f'letter-spacing:.07em;margin-top:4px;font-weight:600">{label}</div>'
-        f'</div>'
+        f'<div style="background:rgba(79,110,247,0.07);border:1px solid rgba(79,110,247,0.18);' 
+        f'border-radius:12px;padding:0.7rem 0.9rem;text-align:center;' 
+        f'width:100%;box-shadow:0 2px 8px rgba(0,0,0,0.06);flex:1;">' 
+        f'<div style="font-size:1.2rem;line-height:1">{icon}</div>' 
+        f'<div style="{val_style}">{val_display}</div>' 
+        f'{arrow_html}' 
+        f'<div style="font-size:0.63rem;opacity:0.6;text-transform:uppercase;' 
+        f'letter-spacing:.07em;margin-top:4px;font-weight:600">{label}</div>' 
+        f'</div>' 
     )
 
 
