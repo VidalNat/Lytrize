@@ -6,10 +6,10 @@
 >
 > Demo screenshots are maintained in the project Wiki.
 
-![Welcome_Screen](demo_pics/welcome_screen.png)
- <!--
-![Profile_Dashboad](demo_pics/profile_dashboad.png)
+![Welcome_Screen](demo_pics/login_page.png)
 
+![Profile_Dashboad](demo_pics/profile_page.png)
+ <!--
 ![Upload & Overview](demo_pics/data_upload&overview.png)
 
 ![Data_Transformation](demo_pics/data_transformation.png)
