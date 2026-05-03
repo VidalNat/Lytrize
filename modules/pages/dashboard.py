@@ -956,6 +956,7 @@ def _do_save(sname_in, charts, df):
     st.session_state.pop("editing_session_name",  None)
     st.session_state.pop("_edit_notes_loaded",    None)
     st.session_state.pop("_analysis_notes_loaded", None)
+    st.session_state.pop("_notes_shadow",          None)
     st.success(f"✅ Saved as '{sname_in}'!")
 
 
@@ -965,6 +966,7 @@ def _do_update(sname_in, charts, clear_editing=True):
     # always in sync with what was actually saved.
     st.session_state.pop("_edit_notes_loaded",      None)
     st.session_state.pop("_analysis_notes_loaded",  None)
+    st.session_state.pop("_notes_shadow",           None)
     eid = st.session_state.editing_session_id
     update_session_db(
         eid, sname_in,
