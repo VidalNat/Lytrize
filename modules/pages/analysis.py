@@ -34,7 +34,7 @@ All config widgets are reactive; options like Top N and Dual Y show/hide instant
 import uuid, json
 import streamlit as st
 import streamlit.components.v1 as _comp
-from modules.database import validate_token, log_activity, save_draft, update_session_db
+from modules.database import validate_token, log_activity, save_draft, update_session_db, get_session_meta
 from modules.analysis import (
     ANALYSIS_OPTIONS, _NEEDS_AXES, _NO_FORM,
     render_config_panel, _collect_kwargs, _run,
@@ -82,8 +82,10 @@ def _autosave() -> None:
          session is updated in-place and notes are never lost even if the user
          closes the tab without reaching the dashboard Save button.
 
-    Also syncs the shadow notes dict so desc_ widget values are captured before
-    Streamlit's widget-key cleanup on the upcoming st.rerun().
+    KPI preservation: the analysis page never loads or manages KPIs, so
+    st.session_state.kpis is absent here.  We read the current kpis_json from
+    the DB rather than overwriting it with "[]", which would silently wipe
+    any KPIs the user added on the dashboard.
     """
     _shadow_notes_sync()
     _persist_draft()
@@ -92,13 +94,24 @@ def _autosave() -> None:
     name = st.session_state.get("editing_session_name", "Session")
     if eid and uid:
         try:
+            # Preserve KPIs: analysis page never sets st.session_state.kpis, so
+            # if it's absent we must read the saved value rather than write "[]".
+            if "kpis" in st.session_state:
+                kpis_json = json.dumps(st.session_state["kpis"])
+            else:
+                try:
+                    sm = get_session_meta(eid, uid)
+                    kpis_json = sm.get("kpis_json", "[]") if sm else "[]"
+                except Exception:
+                    kpis_json = "[]"
+
             update_session_db(
                 eid, name,
                 charts_to_json(st.session_state.get("charts", [])),
                 st.session_state.get("selected_analyses", []),
                 uid,
                 dashboard_title = st.session_state.get("dashboard_title", ""),
-                kpis_json       = json.dumps(st.session_state.get("kpis", [])),
+                kpis_json       = kpis_json,
                 layout_mode     = st.session_state.get("layout_mode", "portrait"),
             )
             try:
