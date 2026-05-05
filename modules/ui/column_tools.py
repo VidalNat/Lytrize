@@ -128,10 +128,10 @@ def show_dtype_transformer(df):
                 st.session_state.df = df
                 n_null_after = int(df[col_to_convert].isna().sum())
                 new_nulls = max(0, n_null_after - n_null_before)
-                msg = f"✅ Converted `{col_to_convert}` to `{new_dtype}`"
+                msg = f"Converted `{col_to_convert}` to `{new_dtype}`"
                 if new_nulls:
-                    msg += f" ({new_nulls} value(s) couldn't convert → became null)"
-                st.success(msg)
+                    msg += f" ({new_nulls} value(s) couldn't convert → null)"
+                st.toast(msg, icon="🔄")
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Conversion failed: {e}")

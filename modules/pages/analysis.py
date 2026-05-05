@@ -14,19 +14,15 @@ Flow on each rerun:
     5. "Go to Dashboard" button navigates to the dashboard page.
 
 Special handling:
-    - data_quality bypasses the st.form() wrapper (listed in _NO_FORM) because
-      it contains its own st.button() widgets.
     - descriptive renders inline via st.dataframe() and returns no charts.
     - OUTLIER_HELP text is displayed above outlier charts.
     - Auto-insights are generated via generate_chart_insights() after each chart.
 
 CONTRIBUTING -- after adding a new analysis type in __init__.py:
     No changes needed here unless your analysis requires special page-level
-    handling (like data_quality does). The card grid, config panel, and chart
-    generation all read from ANALYSIS_OPTIONS and _RUNNERS automatically.
-"""
-"""
-modules/pages/analysis.py
+    handling. The card grid, config panel, and chart generation all read from
+    ANALYSIS_OPTIONS and _RUNNERS automatically.
+
 Two-step "Configure → Generate" flow -- no st.form.
 All config widgets are reactive; options like Top N and Dual Y show/hide instantly.
 """
@@ -41,7 +37,7 @@ from modules.analysis import (
     render_config_panel_scoped, _collect_kwargs_scoped,
 )
 from modules.analysis.runners   import run_descriptive
-from modules.analysis.data_quality import run_data_quality
+from modules.analysis.data_quality import run_data_quality  # kept for regen of legacy saved charts
 from modules.analysis.outlier   import OUTLIER_HELP
 from modules.charts import charts_to_json, clean_insight_text, generate_chart_insights
 from modules.ui.css import inject_footer, render_logo
@@ -355,28 +351,8 @@ def page_analysis():
         }, 150);
         </script>""", height=0)
 
-        # ── Data Quality -- special case (no config needed) ────────────────────
-        if active in _NO_FORM:
-            st.markdown(f"### 🧹 {analysis_name}")
-            new_charts_raw = run_data_quality(df)
-            new_charts = [(str(uuid.uuid4())[:8], t, f) for t, f in new_charts_raw]
-
-            c1, c2, _ = st.columns([1, 1, 5])
-            with c1:
-                if st.button("✅ Add to Analysis", key="dq_add"):
-                    if new_charts:
-                        _add_charts(new_charts, active)
-                    st.session_state["_active_analysis"] = None
-                    _autosave()
-                    st.rerun()
-            with c2:
-                if st.button("✕ Close", key="dq_close"):
-                    st.session_state["_active_analysis"] = None
-                    _shadow_notes_sync()
-                    st.rerun()
-
         # ── Descriptive -- no chart output ─────────────────────────────────────
-        elif active == "descriptive":
+        if active == "descriptive":
             st.markdown("### 🗂️ Descriptive Statistics")
             run_descriptive(df)
             c1, c2, _ = st.columns([1, 1, 5])

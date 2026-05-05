@@ -281,26 +281,62 @@ def generate_chart_insights(chart_type: str, title: str, fig,
     Insights are stored in session_state[f"auto_insights_{uid}"] and
     displayed below each chart card.
 
-    The engine matches on `chart_type` first, then on keywords in `title`.
-    Each branch extracts values from fig.data[0] and appends readable strings.
+    When the user has filled in column descriptions on the upload page,
+    those descriptions are woven directly into the insight text so each
+    observation reads like a business-analyst comment rather than a
+    generic statistical note.
 
     Args:
         chart_type:       Analysis type string (e.g. "distribution", "outlier").
         title:            Chart title string used as a fallback match signal.
         fig:              Plotly Figure object.
-        col_descriptions: Optional dict of {column_name: description} strings.
-                          When a column name from this dict appears in the title,
-                          a "Context: ..." insight line is appended.
+        col_descriptions: Optional dict {column_name: description}.
 
     Returns:
         list of plain-text insight strings (Markdown stripped).
-
-    CONTRIBUTING -- to add insights for a new analysis type:
-        Add an elif branch that matches chart_type == "your_id".
-        Read fig.data[0] for trace data, compute stats, append to `insights`.
     """
     insights = []
-    tl = title.lower()  # Lowercase title for keyword matching.
+    tl = title.lower()
+    col_desc = col_descriptions or {}
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _named(col: str) -> str:
+        """Return 'col (description)' when a description exists, else 'col'."""
+        desc = col_desc.get(col, "").strip()
+        if desc:
+            short = desc[:55] + "…" if len(desc) > 55 else desc
+            return f"{col} ({short})"
+        return col
+
+    def _primary_col_from_title() -> str:
+        """
+        Extract the primary column name from known title prefixes.
+        e.g. "Dist: Revenue"  → "Revenue"
+             "TS: Sales"      → "Sales"
+             "Outliers: Price"→ "Price"
+        """
+        for prefix in ("Dist: ", "TS: ", "Outliers: ", "Trend: ",
+                       "Counts: ", "Time Series: "):
+            if title.startswith(prefix):
+                return title[len(prefix):]
+        return ""
+
+    def _cols_in_title() -> list:
+        """Return all col_description keys whose name appears in the chart title."""
+        return [c for c in col_desc if c and c.lower() in tl and col_desc[c].strip()]
+
+    def _append_desc_context():
+        """
+        Append a short 'What these columns mean' footnote for any columns
+        referenced in the chart that have user-provided descriptions.
+        Only fires when descriptions haven't already been woven into the text.
+        """
+        relevant = _cols_in_title()
+        for col in relevant:
+            desc = col_desc[col].strip()
+            if desc and col not in " ".join(insights):
+                insights.append(f"Column context — {col}: {desc}")
 
     # ── Distribution ──────────────────────────────────────────────────────────
     if chart_type == "distribution" or "dist:" in tl:
@@ -308,32 +344,59 @@ def generate_chart_insights(chart_type: str, title: str, fig,
             arr = _as_number_series(fig.data[0].x)
             if arr.empty:
                 return []
+            col = _primary_col_from_title() or "this column"
             mean, median, std = arr.mean(), arr.median(), arr.std()
             skew = float(arr.skew())
+
+            # Lead with the column's business meaning if available
             insights.append(
-                f"Typical value is around {_fmt_num(median)}. "
-                f"The average is {_fmt_num(mean)}, and the usual spread is about {_fmt_num(std)}.")
-            if abs(skew) > 1:
+                f"{_named(col)} centres around {_fmt_num(median)} "
+                f"(median). The average is {_fmt_num(mean)}, "
+                f"with a typical spread of ±{_fmt_num(std)}."
+            )
+
+            # Plain-language skew interpretation
+            if abs(skew) > 1.5:
                 if skew > 0:
                     insights.append(
-                        "A few high values are pulling the average upward, "
-                        "so the median is the safer everyday benchmark.")
+                        "A small number of unusually high values are pulling the average "
+                        "above the typical case — the median is the more reliable benchmark here."
+                    )
                 else:
                     insights.append(
-                        "A few low values are pulling the average downward, "
-                        "so compare decisions against the median too.")
+                        "A few very low values are dragging the average down — "
+                        "the median gives a fairer picture of the typical record."
+                    )
+            elif abs(skew) > 0.5:
+                direction = "higher" if skew > 0 else "lower"
+                insights.append(
+                    f"The distribution leans slightly {direction}, "
+                    "so averages and medians tell a similar but not identical story."
+                )
             else:
                 insights.append(
-                    "Values are fairly balanced around the middle, "
-                    "so the average and median tell a similar story.")
+                    "Values are symmetrically distributed — the average and median "
+                    "are close, making either a reliable summary."
+                )
+
+            # Outlier count
             q1, q3 = arr.quantile(0.25), arr.quantile(0.75)
             iqr = q3 - q1
-            n_out = ((arr < q1 - 1.5 * iqr) | (arr > q3 + 1.5 * iqr)).sum()
+            n_out = int(((arr < q1 - 1.5 * iqr) | (arr > q3 + 1.5 * iqr)).sum())
             if n_out > 0:
+                pct_out = n_out / len(arr) * 100
                 insights.append(
-                    f"{n_out:,} {_plural(n_out, 'unusual value')} "
-                    f"{'sits' if n_out == 1 else 'sit'} outside the normal range. "
-                    "Review them before trusting totals or averages.")
+                    f"{n_out:,} {_plural(n_out, 'value')} ({pct_out:.1f}%) "
+                    f"{'sits' if n_out == 1 else 'sit'} outside the normal range — "
+                    "check these before using totals or averages in reports."
+                )
+
+            # Percentile range for context
+            p10, p90 = arr.quantile(0.10), arr.quantile(0.90)
+            insights.append(
+                f"The middle 80% of records fall between "
+                f"{_fmt_num(p10)} and {_fmt_num(p90)}."
+            )
         except Exception:
             pass
 
@@ -354,7 +417,7 @@ def generate_chart_insights(chart_type: str, title: str, fig,
                         except Exception:
                             continue
                         if abs(fv) >= 1:
-                            continue  # Ignore self-correlation cells.
+                            continue
                         if best is None or abs(fv) > abs(best[0]):
                             left  = str(y_labels[r]) if r < len(y_labels) else f"Column {r+1}"
                             right = str(x_labels[c]) if c < len(x_labels) else f"Column {c+1}"
@@ -362,82 +425,166 @@ def generate_chart_insights(chart_type: str, title: str, fig,
                 if best:
                     strength  = ("strong" if abs(best[0]) >= 0.7
                                  else "moderate" if abs(best[0]) >= 0.4 else "weak")
-                    direction = ("move in the same direction" if best[0] > 0
+                    direction = ("tend to rise together"   if best[0] > 0
                                  else "move in opposite directions")
                     insights.append(
-                        f"{best[1]} and {best[2]} show the clearest relationship: "
-                        f"{strength}, {direction} ({best[0]:.2f}).")
+                        f"{_named(best[1])} and {_named(best[2])} show the "
+                        f"strongest link: {strength} ({best[0]:+.2f}) — they {direction}."
+                    )
+                    if abs(best[0]) >= 0.7:
+                        insights.append(
+                            "A correlation above 0.7 is worth investigating for a "
+                            "cause-and-effect relationship, though correlation alone "
+                            "does not prove causation."
+                        )
                 else:
                     insights.append(
-                        "No clear relationship stands out between the selected numeric columns.")
+                        "No clear relationship stands out. "
+                        "The selected columns appear largely independent of each other."
+                    )
+
+            # Count weak vs strong pairs for a summary
+            try:
+                strong_pairs, total_pairs = 0, 0
+                for r, row in enumerate(z):
+                    for c_idx, val in enumerate(row):
+                        if r >= c_idx or val is None:
+                            continue
+                        try:
+                            fv = float(val)
+                            total_pairs += 1
+                            if abs(fv) >= 0.6:
+                                strong_pairs += 1
+                        except Exception:
+                            pass
+                if total_pairs > 1:
+                    insights.append(
+                        f"{strong_pairs} of {total_pairs} column pairs "
+                        f"{'has' if strong_pairs == 1 else 'have'} a correlation "
+                        f"above 0.6 — scan the darkest cells for the most actionable links."
+                    )
+            except Exception:
+                pass
+
             insights.append(
-                "Use this as a clue for investigation, not proof that one column causes another.")
+                "Use this as a lead for deeper investigation, not as proof "
+                "that one column directly causes changes in another."
+            )
         except Exception:
             pass
 
     # ── Outlier detection ─────────────────────────────────────────────────────
     elif chart_type == "outlier" or "outlier" in tl:
         try:
+            col = _primary_col_from_title() or "this column"
             outlier_trace = next(
                 (t for t in fig.data
                  if "outlier" in str(getattr(t, "name", "")).lower()), None)
-            if outlier_trace and len(outlier_trace.y) > 0:
+            normal_trace = next(
+                (t for t in fig.data
+                 if "normal" in str(getattr(t, "name", "")).lower()), None)
+
+            total_pts = sum(
+                len(getattr(t, "y", None) or []) for t in fig.data
+                if getattr(t, "y", None) is not None
+            )
+
+            if outlier_trace and len(getattr(outlier_trace, "y", []) or []) > 0:
                 n    = len(outlier_trace.y)
                 vals = _as_number_series(outlier_trace.y)
+                pct  = n / total_pts * 100 if total_pts > 0 else 0
                 if not vals.empty:
                     insights.append(
-                        f"{n:,} {_plural(n, 'unusual value')} "
-                        f"{'was' if n == 1 else 'were'} found, ranging from "
-                        f"{_fmt_num(vals.min())} to {_fmt_num(vals.max())}.")
+                        f"{_named(col)} has {n:,} {_plural(n, 'outlier')} "
+                        f"({pct:.1f}% of records), ranging from "
+                        f"{_fmt_num(vals.min())} to {_fmt_num(vals.max())}."
+                    )
                 else:
                     insights.append(
-                        f"{n:,} {_plural(n, 'unusual value')} "
-                        f"{'was' if n == 1 else 'were'} found.")
-                if n > 10:
+                        f"{_named(col)}: {n:,} {_plural(n, 'outlier')} detected "
+                        f"({pct:.1f}% of records)."
+                    )
+                if pct > 10:
                     insights.append(
-                        "The count is high -- check for data-entry issues or a "
-                        "different scale before summarising.")
+                        "Over 10% of records are flagged — this may indicate a "
+                        "measurement scale issue, data-entry errors, or a genuine "
+                        "multi-modal distribution. Review before computing averages."
+                    )
+                elif n > 5:
+                    insights.append(
+                        "Check these rows individually — they could be data-entry "
+                        "mistakes or legitimately exceptional events worth noting."
+                    )
                 else:
                     insights.append(
-                        "Review these rows individually; a single unusual value "
-                        "can distort averages and trends.")
+                        "A small number of outliers. Inspect each one; a single "
+                        "extreme value can shift averages and totals significantly."
+                    )
             else:
-                insights.append("No obvious outliers were found using the usual range check.")
+                insights.append(
+                    f"No outliers detected in {_named(col)} using the standard "
+                    "IQR (1.5× interquartile range) threshold. The data looks clean."
+                )
         except Exception:
             pass
 
     # ── Time series ───────────────────────────────────────────────────────────
     elif chart_type == "time_series" or "ts:" in tl or "trend" in tl:
         try:
+            col = _primary_col_from_title() or "the metric"
             y = _as_number_series(fig.data[0].y)
+            x_vals = _as_list(getattr(fig.data[0], "x", None))
             if len(y) >= 2:
                 trend = ("increased" if y.iloc[-1] > y.iloc[0]
                          else "decreased" if y.iloc[-1] < y.iloc[0] else "stayed flat")
                 pct = ((y.iloc[-1] - y.iloc[0]) / abs(y.iloc[0]) * 100
                        if y.iloc[0] != 0 else 0)
                 insights.append(
-                    f"The trend {trend} from {_fmt_num(y.iloc[0])} to "
-                    f"{_fmt_num(y.iloc[-1])} ({_fmt_pct(pct)} from start to end).")
+                    f"{_named(col)} {trend} overall — "
+                    f"from {_fmt_num(y.iloc[0])} to {_fmt_num(y.iloc[-1])} "
+                    f"({_fmt_pct(pct)} change from first to last period)."
+                )
+
+                # Peak and trough with labels
                 peak_i = int(y.reset_index(drop=True).idxmax())
                 low_i  = int(y.reset_index(drop=True).idxmin())
-                x_vals = _as_list(getattr(fig.data[0], "x", None))
                 peak_x = f" at {_fmt_label(x_vals[peak_i])}" if peak_i < len(x_vals) else ""
                 low_x  = f" at {_fmt_label(x_vals[low_i])}"  if low_i  < len(x_vals) else ""
                 insights.append(
-                    f"Highest point is {_fmt_num(y.max())}{peak_x}; "
-                    f"lowest point is {_fmt_num(y.min())}{low_x}.")
+                    f"Peak: {_fmt_num(y.max())}{peak_x}. "
+                    f"Lowest: {_fmt_num(y.min())}{low_x}. "
+                    f"The range spans {_fmt_num(y.max() - y.min())}."
+                )
+
+                # Volatility / consistency signal
+                cv = y.std() / abs(y.mean()) if y.mean() != 0 else 0
+                if cv > 0.5:
+                    insights.append(
+                        "High variability across periods — look for recurring "
+                        "seasonal patterns or one-off spikes before using this trend "
+                        "for forecasting."
+                    )
+                elif cv < 0.1:
+                    insights.append(
+                        "Very consistent across periods — a reliable baseline "
+                        "for benchmarking or target-setting."
+                    )
+                else:
+                    insights.append(
+                        "Moderate variability. Look for repeating peaks or dips; "
+                        "they often point to seasonality or cyclical business patterns."
+                    )
         except Exception:
-            pass
-        insights.append(
-            "Look for repeating peaks or dips; those often point to seasonality "
-            "or operating patterns.")
+            insights.append(
+                "Look for repeating peaks or dips; those often point to "
+                "seasonality or operating patterns."
+            )
 
     # ── Categorical & pie ─────────────────────────────────────────────────────
     elif (chart_type in ("categorical", "pie_chart")
           or any(k in tl for k in ("count", "bar", "pie", "donut"))):
         try:
             data = fig.data[0]
-            # Horizontal bar: x=values, y=categories. Vertical: x=categories, y=values.
             is_horiz = getattr(data, "orientation", "v") == "h"
             if is_horiz:
                 vals = [v for v in _as_list(getattr(data, "x", None)) if v is not None]
@@ -450,36 +597,65 @@ def generate_chart_insights(chart_type: str, title: str, fig,
                 vals = _as_list(data.values)
                 xs   = _as_list(getattr(data, "labels", None))
             else:
-                # Fallback: try x as values when y looks like strings.
                 vals = [v for v in _as_list(getattr(data, "x", None))
                         if isinstance(v, (int, float))]
                 xs   = _as_list(getattr(data, "y", None))
+
             if vals:
                 vals    = [float(v) for v in vals]
                 total   = sum(v for v in vals if v)
                 top_i   = vals.index(max(vals))
+                bot_i   = vals.index(min(vals))
                 top_cat = xs[top_i] if xs and top_i < len(xs) else str(top_i)
+                bot_cat = xs[bot_i] if xs and bot_i < len(xs) else str(bot_i)
                 top_pct = (max(vals) / total * 100) if total else 0
+
+                # Top category with context if the column is described
+                cat_col = next((c for c in col_desc if c.lower() in tl), "")
+                cat_ctx = f" ({col_desc[cat_col].strip()[:50]})" if cat_col and col_desc.get(cat_col) else ""
                 insights.append(
-                    f"{top_cat} leads with {_fmt_num(max(vals))}, "
-                    f"which is {top_pct:.1f}% of the values shown.")
+                    f"{top_cat}{cat_ctx} leads at {_fmt_num(max(vals))}, "
+                    f"representing {top_pct:.1f}% of the total."
+                )
+
                 n_cats = len(vals)
                 if n_cats > 1:
                     sorted_vals = sorted(vals, reverse=True)
-                    if (len(sorted_vals) > 1 and sorted_vals[1]
-                            and sorted_vals[0] / sorted_vals[1] >= 1.1):
-                        insights.append(
-                            f"The leader is {sorted_vals[0] / sorted_vals[1]:.1f}x "
-                            "the next largest category.")
+                    # Gap between #1 and #2
+                    if len(sorted_vals) > 1 and sorted_vals[1]:
+                        ratio = sorted_vals[0] / sorted_vals[1]
+                        if ratio >= 2:
+                            insights.append(
+                                f"The top category is {ratio:.1f}× the second — "
+                                "a clear leader with a significant gap."
+                            )
+                        elif ratio >= 1.1:
+                            insights.append(
+                                f"The leader is {ratio:.1f}× the next category — "
+                                "a meaningful but not extreme gap."
+                            )
+
+                    # Concentration / balance
                     even_pct      = 100 / n_cats
                     concentration = max(vals) / total * 100
-                    if concentration > 2 * even_pct:
+                    if concentration > 2.5 * even_pct:
                         insights.append(
-                            "The result is concentrated, so this category has "
-                            "an outsized effect on the total.")
-                    else:
+                            f"Highly concentrated — a single category holds "
+                            f"{top_pct:.0f}% of the total across {n_cats} options. "
+                            "This creates dependency risk."
+                        )
+                    elif concentration < 1.5 * even_pct:
                         insights.append(
-                            f"The values are reasonably balanced across {n_cats} categories.")
+                            f"Values are evenly spread across {n_cats} categories "
+                            "— no single category dominates."
+                        )
+
+                    # Bottom performer
+                    bot_pct = (min(vals) / total * 100) if total else 0
+                    insights.append(
+                        f"Lowest: {bot_cat} at {_fmt_num(min(vals))} ({bot_pct:.1f}%). "
+                        "If this is a revenue or performance metric, it may be worth reviewing."
+                    )
         except Exception:
             pass
 
@@ -492,21 +668,28 @@ def generate_chart_insights(chart_type: str, title: str, fig,
             labels = _as_list(getattr(data, "x", None))
             if not vals.empty:
                 top_i     = int(vals.reset_index(drop=True).idxmax())
+                bot_i     = int(vals.reset_index(drop=True).idxmin())
                 top_label = labels[top_i] if top_i < len(labels) else "The highest item"
+                bot_label = labels[bot_i] if bot_i < len(labels) else "The lowest item"
                 insights.append(
-                    f"{top_label} is the highest value in this chart "
-                    f"at {_fmt_num(vals.max())}.")
-                if vals.min() != vals.max():
+                    f"{_named(top_label)} is the highest at {_fmt_num(vals.max())}; "
+                    f"{_named(bot_label)} is the lowest at {_fmt_num(vals.min())}."
+                )
+                val_range = vals.max() - vals.min()
+                if val_range > 0:
                     insights.append(
-                        f"The range runs from {_fmt_num(vals.min())} to "
-                        f"{_fmt_num(vals.max())}, so compare the largest and "
-                        "smallest items before drawing conclusions.")
+                        f"The gap between top and bottom is {_fmt_num(val_range)} — "
+                        f"a {val_range / vals.min() * 100:.0f}% difference from the lowest."
+                        if vals.min() != 0 else
+                        f"The gap between top and bottom is {_fmt_num(val_range)}."
+                    )
         except Exception:
             pass
         if not insights:
             insights.append(
-                "Compare the largest and smallest values first; "
-                "they usually explain the main story.")
+                "Compare the largest and smallest values first — "
+                "they usually explain the main story."
+            )
 
     # ── Data quality ──────────────────────────────────────────────────────────
     elif (chart_type == "data_quality"
@@ -514,25 +697,27 @@ def generate_chart_insights(chart_type: str, title: str, fig,
         try:
             data = fig.data[0]
             if hasattr(data, "labels") and hasattr(data, "values"):
-                labels  = list(data.labels)
-                vals    = [float(v) for v in data.values]
-                total   = sum(vals)
-                details = []
-                for label, val in zip(labels, vals):
-                    pct = val / total * 100 if total else 0
-                    details.append(f"{label}: {_fmt_num(val)} ({pct:.1f}%)")
+                labels = list(data.labels)
+                vals   = [float(v) for v in data.values]
+                total  = sum(vals)
+                details = [
+                    f"{label}: {_fmt_num(val)} ({val/total*100:.1f}%)"
+                    for label, val in zip(labels, vals)
+                ]
                 if details:
-                    insights.append("Data quality split -- " + "; ".join(details) + ".")
+                    insights.append("Data quality split — " + "; ".join(details) + ".")
         except Exception:
             pass
         insights.append(
-            "Clean missing or duplicate rows before using these charts for decisions.")
+            "Resolve missing or duplicate rows before using these charts for decisions."
+        )
 
-    # ── Column descriptions as contextual footnotes ───────────────────────────
-    # When the user has described columns (future feature), append context lines.
-    if col_descriptions:
-        for col, desc in col_descriptions.items():
-            if col.lower() in tl and desc.strip():
-                insights.append(f"Context: {col} means {desc.strip()}")
+    # ── Column description footnotes (for any chart type) ─────────────────────
+    # Only appended when the description hasn't already been woven into the text above.
+    if col_desc:
+        mentioned = " ".join(insights).lower()
+        for col, desc in col_desc.items():
+            if col and desc.strip() and col.lower() in tl and desc.strip().lower() not in mentioned:
+                insights.append(f"Column context — {col}: {desc.strip()}")
 
     return clean_insights(insights)

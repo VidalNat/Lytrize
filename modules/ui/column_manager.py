@@ -77,7 +77,7 @@ def show_column_manager(df):
                     else:
                         df[new_col_name.strip()] = df.eval(formula_str)
                     st.session_state.df = df
-                    st.success(f"✅ Added {new_col_name.strip()}")
+                    st.toast(f"Added column '{new_col_name.strip()}'", icon="➕")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
@@ -91,7 +91,7 @@ def show_column_manager(df):
             for k in ["num_cols", "cat_cols"]:
                 if k in st.session_state:
                     st.session_state[k] = [c for c in st.session_state[k] if c != col_to_del]
-            st.success(f"✅ Removed {col_to_del}")
+            st.toast(f"Removed column '{col_to_del}'", icon="🗑️")
             st.rerun()
 
     return st.session_state.df
