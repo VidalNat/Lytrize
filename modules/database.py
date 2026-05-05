@@ -82,16 +82,15 @@ _PG    = DB_URL.startswith(("postgresql://", "postgres://"))
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _connect():
-    """
-    Return a new database connection for the configured backend.
-
-    For Postgres, autocommit is disabled so all writes require an explicit
-    conn.commit(). For SQLite, check_same_thread=False allows the connection
-    to be used from Streamlit's multi-threaded runner.
-    """
     if _PG:
         import psycopg2
-        conn = psycopg2.connect(DB_URL)
+        url = DB_URL
+        # Supabase (and most managed Postgres) requires SSL.
+        # Append sslmode=require if not already specified.
+        if "sslmode" not in url:
+            sep = "&" if "?" in url else "?"
+            url = url + sep + "sslmode=require"
+        conn = psycopg2.connect(url)
         conn.autocommit = False
         return conn
     else:
