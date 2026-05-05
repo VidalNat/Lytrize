@@ -37,6 +37,12 @@ def page_home():
             st.session_state.username = restored[1]
             st.session_state.page     = "home"
             st.rerun()
+        else:
+            # Token is invalid or expired — clear it so the user isn't stuck
+            # in a redirect loop between home and auth.
+            st.query_params.clear()
+            st.session_state.page = "auth"
+            st.rerun()
 
     # Logo + logout row
     lc1, lc2, lc3 = st.columns([13, 1, 1])
@@ -179,7 +185,7 @@ def page_home():
                         log_activity(st.session_state.user_id, "session_renamed",
                                      f"id={sid} new='{new_name}'", sid)
                         st.session_state.pop(f"renaming_{sid}", None)
-                        st.success(f"Renamed to '{new_name}'")
+                        st.toast(f"Renamed to '{new_name}'", icon="✏️")
                         st.rerun()
                 with r2:
                     if st.button("Cancel", key=f"cancel_rename_{sid}"):
@@ -192,7 +198,8 @@ def page_home():
                     if st.button("🗑️ Yes, delete", key=f"confirm_yes_{sid}"):
                         delete_session_db(sid, st.session_state.user_id)
                         st.session_state.pop(f"confirm_del_{sid}", None)
-                        st.success("Session deleted."); st.rerun()
+                        st.toast("Session deleted.", icon="🗑️")
+                        st.rerun()
                 with d2:
                     if st.button("Cancel", key=f"confirm_no_{sid}"):
                         st.session_state.pop(f"confirm_del_{sid}", None); st.rerun()

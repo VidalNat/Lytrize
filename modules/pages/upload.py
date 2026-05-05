@@ -34,6 +34,7 @@ from modules.ui.column_manager import show_column_manager
 from modules.ui.column_tools import show_dtype_transformer, show_column_classifier
 from modules.ui.excel_loader import show_excel_loader
 from modules.ui.css import inject_footer, render_logo
+from modules.analysis.data_quality import run_data_quality
 
 
 def _is_excel(name: str) -> bool:
@@ -128,8 +129,20 @@ def page_upload():
 
 def _show_analysis_pipeline(df: pd.DataFrame, file_name: str):
     st.markdown("---")
-    st.success(f"✅ **{file_name}** -- {df.shape[0]:,} rows × {df.shape[1]} columns")
+    st.markdown(
+        f"**{file_name}** — {df.shape[0]:,} rows × {df.shape[1]} columns"
+    )
     st.dataframe(df.head(), use_container_width=True)
+
+    # ── Data Quality (fragment — reruns independently from the rest) ──────────
+    st.markdown("### 🧹 Data Quality")
+    st.caption(
+        "Review missing values and duplicate rows before analysis. "
+        "Fixing data issues here gives you cleaner charts and more reliable insights."
+    )
+    run_data_quality(df)   # @st.fragment — only this block reruns on widget changes
+
+    st.markdown("---")
 
     df = show_column_manager(df)
     df = show_dtype_transformer(df)
@@ -150,7 +163,7 @@ def _show_analysis_pipeline(df: pd.DataFrame, file_name: str):
             )
         if st.button("💾 Save Column Descriptions", key="save_col_descs"):
             st.session_state.col_descriptions = col_descs
-            st.success("✅ Column descriptions saved.")
+            st.toast("Column descriptions saved.", icon="💾")
 
 
 def _clear_excel_state(new_file_name: str = ""):

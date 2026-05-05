@@ -58,11 +58,23 @@ import datetime
 from typing import Optional
 
 # ── Environment configuration ─────────────────────────────────────────────────
-# Override DB_PATH via LYTRIZE_DB_PATH env var to point at a custom SQLite file.
-# Override to Postgres by setting DATABASE_URL to a postgresql:// URI.
+# Streamlit Cloud stores secrets in st.secrets; local dev uses env vars.
+# We try st.secrets first so Streamlit Cloud deployments work automatically.
 DB_PATH = os.environ.get("LYTRIZE_DB_PATH", "lytrize.db")
-DB_URL  = os.environ.get("DATABASE_URL", "")
-_PG     = DB_URL.startswith(("postgresql://", "postgres://"))
+
+def _get_db_url() -> str:
+    """Return DATABASE_URL from Streamlit secrets (Cloud) or env var (local)."""
+    try:
+        import streamlit as st
+        url = st.secrets.get("DATABASE_URL", "")
+        if url:
+            return url
+    except Exception:
+        pass
+    return os.environ.get("DATABASE_URL", "")
+
+DB_URL = _get_db_url()
+_PG    = DB_URL.startswith(("postgresql://", "postgres://"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

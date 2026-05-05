@@ -104,7 +104,7 @@ def page_auth():
                 else:
                     ok, msg = register_user(ru, re, rp)
                     if ok:
-                        st.success(msg)
+                        st.toast("Account created! Please sign in.", icon="✅")
                         log_activity(0, "register", f"new user={ru}")
                         st.session_state.auth_tab = "login"
                         st.rerun()
@@ -162,12 +162,11 @@ def page_profile():
                          use_container_width=True):
                 ok = delete_user_db(user_id)
                 if ok:
-                    # Wipe session state fully and redirect to auth
                     for k in list(st.session_state.keys()):
                         del st.session_state[k]
                     st.query_params.clear()
                     st.session_state.page = "auth"
-                    st.success("Your account has been deleted.")
+                    st.toast("Your account has been deleted.", icon="🗑️")
                     st.rerun()
                 else:
                     st.error("Something went wrong -- account could not be deleted. Try again.")

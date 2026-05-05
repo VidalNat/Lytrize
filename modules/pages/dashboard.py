@@ -382,7 +382,7 @@ def _render_kpi_section(df, readonly):
                         )
                     except Exception:
                         pass
-                st.success(f"✅ {kpi['label']}: {kpi['value']}{kpi['suffix']}")
+                st.toast(f"KPI added: {kpi['label']} = {kpi['value']}{kpi['suffix']}", icon="📌")
                 st.rerun()
     elif not readonly:
         st.caption("Upload a dataset and go to Analysis first to enable KPI calculation.")
@@ -513,7 +513,7 @@ def _render_layout_builder(charts):
         st.session_state.grid_cols_n    = grid_cols_n
         _dash_sync_notes()
         _persist()
-        st.success("✅ Layout applied!")
+        st.toast("Layout applied.", icon="🗂️")
         st.rerun()
 
     return assigned_uids
@@ -581,7 +581,7 @@ def _chart_settings(uid, title, fig, auto_insights, readonly):
             ]
             _dash_sync_notes()
             _persist()
-            st.success("Saved!")
+            st.toast("Chart settings saved.", icon="💾")
             st.rerun()
 
 
@@ -1006,7 +1006,7 @@ def _do_save(sname_in, charts, df):
     st.session_state.pop("_edit_notes_loaded",    None)
     st.session_state.pop("_analysis_notes_loaded", None)
     st.session_state.pop("_notes_shadow",          None)
-    st.success(f"✅ Saved as '{sname_in}'!")
+    st.toast(f"Saved as '{sname_in}'!", icon="💾")
 
 
 def _do_update(sname_in, charts, clear_editing=True):
@@ -1026,7 +1026,7 @@ def _do_update(sname_in, charts, clear_editing=True):
         kpis_json       = json.dumps(st.session_state.get("kpis",[])),
         layout_mode     = st.session_state.get("layout_mode","portrait"))
     clear_draft(st.session_state.user_id)
-    st.success(f"✅ Updated '{sname_in}'!")
+    st.toast(f"Updated '{sname_in}'!", icon="✅")
     if clear_editing:
         st.session_state.pop("editing_session_id",   None)
         st.session_state.pop("editing_session_name", None)
